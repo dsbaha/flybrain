@@ -61,6 +61,13 @@ function makePlumeTexture() {
 }
 
 // --- scenery: procedural trees + rocks (layout from /api/scene) ---
+// Deterministic pseudo-random from coordinates: reloads must not
+// reshuffle rock/tree orientation (a timelapse of fresh page loads
+// would otherwise look like the rocks are spinning).
+function hash2(x, z) {
+  const h = Math.sin(x * 127.1 + z * 311.7) * 43758.5453;
+  return h - Math.floor(h);
+}
 const trunkMat = new THREE.MeshStandardMaterial({ color: 0x6b4a2f, roughness: 0.95 });
 const leafMats = [
   new THREE.MeshStandardMaterial({ color: 0x2d6a4f, roughness: 0.9 }),
@@ -88,10 +95,10 @@ function makeTree(h) {
   return g;
 }
 
-function makeRock(r) {
-  const m = new THREE.Mesh(new THREE.DodecahedronGeometry(r, 0), rockMat);
-  m.position.y = r * 0.45;
-  m.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
+function makeRock(rk) {
+  const m = new THREE.Mesh(new THREE.DodecahedronGeometry(rk.r, 0), rockMat);
+  m.position.y = rk.r * 0.45;
+  m.rotation.set(hash2(rk.x, rk.z) * 3, hash2(rk.z, rk.x) * 3, hash2(rk.x + 7, rk.z - 3) * 3);
   m.scale.y = 0.7;
   return m;
 }
@@ -100,11 +107,11 @@ function buildScenery(trees, rocks) {
   for (const t of trees) {
     const m = makeTree(t.h);
     m.position.set(t.x, 0, t.z);
-    m.rotation.y = Math.random() * Math.PI * 2;
+    m.rotation.y = hash2(t.x, t.z) * Math.PI * 2;
     scene.add(m);
   }
   for (const rk of rocks) {
-    const m = makeRock(rk.r);
+    const m = makeRock(rk);
     m.position.x = rk.x; m.position.z = rk.z;
     scene.add(m);
   }
@@ -142,7 +149,20 @@ function makeFly(color) {
   nose.rotation.z = -Math.PI / 2;
   nose.position.set(2.9, 1.25, 0);
   grp.add(nose);
-  return { grp, wings, phase: Math.random() * 6.28 };
+  // 6 legs: 3 per side, tripod-gait phase offsets
+  const legMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.8 });
+  const legs = [];
+  for (const s of [-1, 1]) {
+    for (let i = 0; i < 3; i++) {
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.06, 2.4, 6), legMat);
+      leg.position.set(0.7 - i * 0.75, 0.5, 0.95 * s);
+      leg.rotation.z = 0.85 * s; // splay outward
+      leg.userData.ph = i * 2.1 + (s > 0 ? Math.PI : 0); // tripod phase
+      grp.add(leg);
+      legs.push(leg);
+    }
+  }
+  return { grp, wings, legs, phase: Math.random() * 6.28, walkAmt: 0 };
 }
 
 function init() {
@@ -226,6 +246,10 @@ function tick3d(t) {
     const flap = Math.sin(s * 40 + f.phase) * 0.5;
     f.wings[0].rotation.z = flap;
     f.wings[1].rotation.z = -flap;
+    // tripod gait: legs swing while the fly moves (forward or reverse)
+    for (const leg of f.legs) {
+      leg.rotation.x = Math.sin(s * 26 + leg.userData.ph) * 0.45 * f.walkAmt;
+    }
   }
   renderer.render(scene, camera);
 }
@@ -283,6 +307,9 @@ function onSnapshot(s) {
     const f = ensureFly(fs);
     f.grp.position.set(fs.x, 0, fs.z);
     f.grp.rotation.y = -fs.h;
+    // leg swing follows actual movement (0 when still)
+    const target = Math.min(1, Math.abs(fs.speed) / 4);
+    f.walkAmt += (target - f.walkAmt) * 0.15;
     // trail
     const pts = fs.trail;
     const pos = f.trailLine.geometry.attributes.position;

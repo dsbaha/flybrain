@@ -263,7 +263,7 @@ func loadDumpRoots(path string) (*Graph, []uint64, error) {
 // topP9Inputs returns the k strongest excitatory presynaptic partners of a
 // P9 neuron, for odor-gated descending drive. Bilateral: left/right P9 get
 // their own input sets so asymmetric odor steers the fly.
-func topP9Inputs(g *Graph, p9, k int) []int {
+func topP9Inputs(g *Graph, p9, k int) ([]int, float64) {
 	n := g.N
 	inDeg := make([]int, n)
 	for _, dst := range g.Col {
@@ -301,10 +301,12 @@ func topP9Inputs(g *Graph, p9, k int) []int {
 		k = len(all)
 	}
 	out := make([]int, k)
+	wsum := 0.0
 	for i := 0; i < k; i++ {
 		out[i] = all[i].i
+		wsum += float64(all[i].w)
 	}
-	return out
+	return out, wsum
 }
 
 // Named neuron root IDs (FlyWire proofread IDs; see experiments.go).
@@ -364,6 +366,8 @@ type Fly struct {
 	speed         float64
 	walking       bool
 	feeding       bool
+	prevOdor      float64 // mean antenna odor last tick (klinotaxis)
+	reverseT      float64 // >0: backing up after bumping an obstacle (behavioral reflex, not neural)
 
 	steps  uint64
 	simMs  float64
@@ -474,6 +478,8 @@ type World struct {
 	sensHalf  int     // left/right split
 	sensTaste int     // offset where sugar-GRN indices start
 	sensHzMax float64
+	normL     float64 // per-side rate normalization (bilateral balance)
+	normR     float64
 	exploreHz float64 // baseline Poisson Hz: spontaneous exploration
 	stepMs    int
 	pauseHz   float64 // P9 mean rate below this -> sit still
@@ -516,10 +522,10 @@ func (w *World) advance(f *Fly) error {
 	}
 	vals := make([]float32, len(w.sensIdx))
 	for i := 0; i < w.sensHalf; i++ {
-		vals[i] = float32(rateL)
+		vals[i] = float32(rateL * w.normL)
 	}
 	for i := w.sensHalf; i < w.sensTaste; i++ {
-		vals[i] = float32(rateR)
+		vals[i] = float32(rateR * w.normR)
 	}
 	taste := float32(0)
 	if feeding {
@@ -560,17 +566,46 @@ func (w *World) advance(f *Fly) error {
 
 	// Stop-and-go on P9 drive; turning stays live (look-around saccades).
 	// Turn toward the faster P9: ipsilateral P9 drive steers that way.
+	// NOTE: P9 is the forward-walking descending neuron (Shiu et al.).
+	// There is no reverse gear in the neural drive yet — true backward
+	// walking uses different DNs. Backing up is a behavioral reflex
+	// triggered by bumping into scenery (see collide below).
+	//
+	// Chemotaxis is run-and-tumble (the real fly mechanism): the bilateral
+	// P9 difference sets turn *direction*, but turn *authority* is gated by
+	// smell — strong odor + rising gradient = run straight at it, fading
+	// odor = tumble (turn hard) to reorient. Far from food the gain is low
+	// and the fly explores.
+	odorNow := (al + ar) / 2
+	dOdor := odorNow - f.prevOdor
+	f.prevOdor = odorNow
+	turnGain := 0.3 + 2.0*math.Min(1, odorNow)
+	if dOdor < 0 {
+		turnGain *= 2.5 // fading smell: tumble
+	} else {
+		turnGain *= 0.45 // rising smell: run
+	}
 	speed, walking := 0.0, false
 	if mean > w.pauseHz {
 		speed = math.Min(1, (mean-w.pauseHz)/120.0) * w.maxSpeed
+		// Orthokinesis: slow down where it smells strong — dwell at food.
+		speed *= 1 - 0.55*math.Min(1, odorNow*1.5)
 		walking = true
 	}
-	turn := (f.p9LRate - f.p9RRate) / 120.0 * 2.5
+	if f.reverseT > 0 {
+		speed = -0.35 * w.maxSpeed
+		walking = true
+	}
+	turn := (f.p9LRate - f.p9RRate) / 120.0 * 2.5 * turnGain
 	dt := float64(w.stepMs) / 1000.0
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	f.heading += turn * dt
+	if f.reverseT > 0 {
+		f.heading += 1.2 * dt // veer while backing up
+		f.reverseT -= dt
+	}
 	if walking {
 		nx := f.x + math.Cos(f.heading)*speed*dt
 		nz := f.z + math.Sin(f.heading)*speed*dt
@@ -584,11 +619,12 @@ func (w *World) advance(f *Fly) error {
 		} else {
 			f.z = nz
 		}
-		// Trunks and rocks: slide around, nudge heading so the fly
-		// doesn't grind against the obstacle.
+		// Trunks and rocks: slide around, then back up and turn —
+		// real flies reverse off obstacles.
 		if nx2, nz2, hit := w.collide(f.x, f.z); hit {
 			f.x, f.z = nx2, nz2
 			f.heading += 0.35
+			f.reverseT = 0.7
 		}
 		f.speed = speed
 	} else {
@@ -629,6 +665,8 @@ func (w *World) snapshot() map[string]any {
 		switch {
 		case f.feeding:
 			state = "feeding"
+		case f.reverseT > 0:
+			state = "reversing"
 		case f.walking:
 			state = "walking"
 		}
@@ -692,11 +730,18 @@ func main() {
 	if err != nil {
 		log.Fatal("sugar GRNs: ", err)
 	}
-	inL := topP9Inputs(g, p9[0], *sensTopK)
-	inR := topP9Inputs(g, p9[1], *sensTopK)
+	inL, sumL := topP9Inputs(g, p9[0], *sensTopK)
+	inR, sumR := topP9Inputs(g, p9[1], *sensTopK)
 	sensIdx := append(append(append([]int{}, inL...), inR...), sugar...)
-	fmt.Printf("P9L=%d (%d inputs) P9R=%d (%d inputs)  sugar GRNs: %d mapped\n",
-		p9[0], len(inL), p9[1], len(inR), len(sugar))
+	// Bilateral balance: the two P9s' top-K input pools differ in total
+	// weight (here 323 vs 237 mV), which would make one side fire faster
+	// on identical odor — a permanent turn bias. Normalize per-side
+	// rates so equal odor gives equal drive; the antenna difference
+	// (not the anatomy lottery) steers the fly.
+	target := (sumL + sumR) / 2
+	normL, normR := target/sumL, target/sumR
+	fmt.Printf("P9L=%d (%d inputs, %.0f mV, norm %.3f) P9R=%d (%d inputs, %.0f mV, norm %.3f)  sugar GRNs: %d mapped\n",
+		p9[0], len(inL), sumL, normL, p9[1], len(inR), sumR, normR, len(sugar))
 
 	w := &World{
 		foods:     []Food{{x: 30, z: 0}},
@@ -704,6 +749,8 @@ func main() {
 		sensHalf:  len(inL),
 		sensTaste: len(inL) + len(inR),
 		sensHzMax: *sensHzMax,
+		normL:     normL,
+		normR:     normR,
 		exploreHz: *exploreHz,
 		stepMs:    *stepMs,
 		pauseHz:   *pauseHz,
