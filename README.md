@@ -98,20 +98,31 @@ cumulatives — use them for firing-rate readouts (no sampling noise).
 # open http://localhost:8080
 ```
 
-Each fly, every tick: smells with two antennae (Gaussian plume +
-flicker) → Poisson-drives the 32 strongest excitatory inputs of the P9
-descending neurons (root-ID resolved) → steps the brain 50 ms → reads
-exact P9 rates via `SPKC` → stop-and-go walking with ipsilateral
-steering → near food drives the 21 sugar GRNs @ 200 Hz (taste) and
-recharges. Hunger gates odor gain. Click the floor to drop food; the
-world auto-redials restarted brains.
+Each fly, every tick runs a genuine sensorimotor loop over the real
+FlyWire connectome:
 
-Honest status: P9 drive, bilateral odor, stop/go, and feeding work live;
-directed odor approach is not yet proven (gradient steering is weak —
-knobs: `--sens-topk`, `--sens-hz-max`, `--explore-hz`, `--pause-hz`,
-`--max-speed`). The blocker is cell-type annotations (ORNs → antennal
-lobe → PNs → … → DNs); the root-ID table in the dump is there for that
-join.
+- **Smell**: bilateral antennae (Gaussian plume + flicker) → Poisson-drive
+  256 food-odor ORNs (ORN_DM1/VA2/DM2/VM5d, left/right) → real antennal-lobe
+  wiring → 17 food PNs (read left/right separately). The PN L/R difference
+  (EMA-smoothed) steers tumble direction when vision is unavailable.
+- **Vision**: retinotopic LC9/LC31 (179 + 47 neurons) driven by object angle
+  (left/right) with size tuning (peaks ~20 units). The DNp09 L/R rate
+  difference steers toward seen objects (1.5 rad/s at full lateralization).
+- **Walk**: DNp09 (central arousal + visual drive) gates forward speed.
+  DNb05 (olfactory DN, genuinely suppressed by odor via AL inhibition)
+  gates stopping at food.
+- **Reverse**: collision → drive MDN's real excitatory inputs (LAL/DNp) →
+  moonwalker DNs fire (170+ Hz) → backward walking (Bidaye et al. 2014).
+- **Taste**: near food, 21 sugar GRNs (20/21 verified LB3) @ 200 Hz; recharge.
+
+Hunger gates odor gain. Click the floor to drop food; the world
+auto-redials restarted brains.
+
+Honest status (v0.1.2): the full loop is neural — no raw world values in
+steering. Validated: 0.96 path efficiency toward food, MDN fires on
+reverse, DNb05 suppresses at food. LC9/LC31 tuning is a placeholder
+(retinotopy + size, not true receptive fields); LC9's real role is
+object tracking per courtship literature.
 
 ## Flags (selection)
 
