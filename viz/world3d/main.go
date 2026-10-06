@@ -499,8 +499,10 @@ type World struct {
 	sensIdx []int
 	ornL0, ornL1 int // offsets in sensIdx
 	ornR0, ornR1 int
-	arL0, arL1   int
-	arR0, arR1   int
+	visL0, visL1 int // visual LC inputs (driven by sight)
+	visR0, visR1 int
+	cenL0, cenL1 int // central inputs (driven by arousal)
+	cenR0, cenR1 int
 	taste0        int // offset where sugar-GRN indices start
 	sensHzMax float64 // Poisson Hz at odor concentration 1.0
 	arousalHz float64 // Poisson Hz on DNp09's true inputs (central walk intent)
@@ -535,10 +537,37 @@ func (w *World) advance(f *Fly) error {
 	// Left antenna -> left ORNs, right antenna -> right ORNs.
 	rateL := w.exploreHz + math.Min(1, al)*w.sensHzMax*gain
 	rateR := w.exploreHz + math.Min(1, ar)*w.sensHzMax*gain
-	// Central arousal: DNp09's true strongest excitatory inputs
-	// (visual LC + central PVLP/AVLP/CB) at a hunger-gated rate.
-	// This is the modeled "intent to walk"; the VNC is not in FlyWire.
+	// Central arousal: DNp09's true CENTRAL inputs (PVLP/AVLP/CB,
+	// not the visual LCs) at a hunger-gated rate. This is the modeled
+	// "intent to walk"; the VNC is not in FlyWire.
 	arousal := w.arousalHz * (0.5 + hunger)
+	// Vision: simple food detector. If food is in the forward 120-degree
+	// field of view, drive the visual LC neurons proportionally to
+	// proximity and centrality. (Placeholder for true LC tuning.)
+	visSig := 0.0
+	for _, fd := range w.foods {
+		dx, dz := fd.x-f.x, fd.z-f.z
+		dist := math.Hypot(dx, dz)
+		if dist > 45 {
+			continue
+		}
+		ang := math.Atan2(dz, dx) - f.heading
+		for ang > math.Pi {
+			ang -= 2 * math.Pi
+		}
+		for ang < -math.Pi {
+			ang += 2 * math.Pi
+		}
+		if math.Abs(ang) > math.Pi/3 {
+			continue // outside 120-degree FOV
+		}
+		prox := 1 - dist/45
+		cent := 1 - math.Abs(ang)/(math.Pi/3)
+		if prox*cent > visSig {
+			visSig = prox * cent
+		}
+	}
+	visRate := visSig * 150.0 // LC drive when food seen
 	// feeding: near food -> taste (sugar GRNs at 200 Hz, the reference drive)
 	feeding := false
 	for _, fd := range w.foods {
@@ -555,10 +584,16 @@ func (w *World) advance(f *Fly) error {
 	for i := w.ornR0; i < w.ornR1; i++ {
 		vals[i] = float32(rateR)
 	}
-	for i := w.arL0; i < w.arL1; i++ {
+	for i := w.visL0; i < w.visL1; i++ {
+		vals[i] = float32(visRate)
+	}
+	for i := w.visR0; i < w.visR1; i++ {
+		vals[i] = float32(visRate)
+	}
+	for i := w.cenL0; i < w.cenL1; i++ {
 		vals[i] = float32(arousal)
 	}
-	for i := w.arR0; i < w.arR1; i++ {
+	for i := w.cenR0; i < w.cenR1; i++ {
 		vals[i] = float32(arousal)
 	}
 	taste := float32(0)
@@ -849,28 +884,47 @@ func main() {
 	if err != nil {
 		log.Fatal("DNb05: ", err)
 	}
-	arL, err := resolveRoots(roots, arousalL)
+	visLi, err := resolveRoots(roots, visL)
 	if err != nil {
-		log.Fatal("arousal-L: ", err)
+		log.Fatal("vis-L: ", err)
 	}
-	arR, err := resolveRoots(roots, arousalR)
+	visRi, err := resolveRoots(roots, visR)
 	if err != nil {
-		log.Fatal("arousal-R: ", err)
+		log.Fatal("vis-R: ", err)
 	}
-	// sensIdx layout: ORN-L ++ ORN-R ++ arousal-L ++ arousal-R ++ sugar
-	sensIdx := append(append(append(append([]int{}, ornL...), ornR...), arL...), arR...)
+	cenLi, err := resolveRoots(roots, cenL)
+	if err != nil {
+		log.Fatal("cen-L: ", err)
+	}
+	cenRi, err := resolveRoots(roots, cenR)
+	if err != nil {
+		log.Fatal("cen-R: ", err)
+	}
+	// sensIdx: ORN-L ++ ORN-R ++ vis-L ++ vis-R ++ cen-L ++ cen-R ++ sugar
+	sensIdx := append(append(append(append(append(append([]int{}, ornL...), ornR...), visLi...), visRi...), cenLi...), cenRi...)
 	sensIdx = append(sensIdx, sugar...)
-	fmt.Printf("DNp09: L=%d R=%d | DNb05: L=%d R=%d | ORNs: L=%d R=%d | PNs: L=%d R=%d | arousal: L=%d R=%d | sugar: %d\n",
-		p9L, p9R, dnb05[0], dnb05[1], len(ornL), len(ornR), len(pnL), len(pnR), len(arL), len(arR), len(sugar))
+	fmt.Printf("DNp09: L=%d R=%d | DNb05: L=%d R=%d | ORNs: L=%d R=%d | PNs: L=%d R=%d | vis: L=%d R=%d | cen: L=%d R=%d | sugar: %d\n",
+		p9L, p9R, dnb05[0], dnb05[1], len(ornL), len(ornR), len(pnL), len(pnR), len(visLi), len(visRi), len(cenLi), len(cenRi), len(sugar))
 
+	o0 := 0
+	o1 := o0 + len(ornL)
+	o2 := o1 + len(ornR)
+	v0 := o2
+	v1 := v0 + len(visLi)
+	v2 := v1 + len(visRi)
+	c0 := v2
+	c1 := c0 + len(cenLi)
+	c2 := c1 + len(cenRi)
 	w := &World{
-		foods:     []Food{{x: 30, z: 0}},
-		sensIdx:   sensIdx,
-		ornL0:     0, ornL1: len(ornL),
-		ornR0:     len(ornL), ornR1: len(ornL) + len(ornR),
-		arL0:      len(ornL) + len(ornR), arL1: len(ornL) + len(ornR) + len(arL),
-		arR0:      len(ornL) + len(ornR) + len(arL), arR1: len(ornL) + len(ornR) + len(arL) + len(arR),
-		taste0:     len(ornL) + len(ornR) + len(arL) + len(arR),
+		foods:   []Food{{x: 30, z: 0}},
+		sensIdx: sensIdx,
+		ornL0:   o0, ornL1: o1,
+		ornR0:   o1, ornR1: o2,
+		visL0:   v0, visL1: v1,
+		visR0:   v1, visR1: v2,
+		cenL0:   c0, cenL1: c1,
+		cenR0:   c1, cenR1: c2,
+		taste0:  c2,
 		sensHzMax: *sensHzMax,
 		arousalHz: *arousalHz,
 		exploreHz: *exploreHz,
