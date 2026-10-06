@@ -545,9 +545,12 @@ func (w *World) advance(f *Fly) error {
 	// not the visual LCs) at a hunger-gated rate. This is the modeled
 	// "intent to walk"; the VNC is not in FlyWire.
 	arousal := w.arousalHz * (0.5 + hunger)
-	// Vision: simple food detector. If food is in the forward 120-degree
-	// field of view, drive the visual LC neurons proportionally to
-	// proximity and centrality. (Placeholder for true LC tuning.)
+	// Vision: visual object detector. If food (a visual object) is in the
+	// forward 120-degree field of view, drive the visual LC neurons
+	// proportionally to proximity and centrality.
+	// NOTE: LC9's real function is tracking small moving objects and driving
+	// turns toward them (courtship literature), not "food detection." We use
+	// it as a generic visual-object signal. (Placeholder for true LC tuning.)
 	visSig := 0.0
 	for _, fd := range w.foods {
 		dx, dz := fd.x-f.x, fd.z-f.z
