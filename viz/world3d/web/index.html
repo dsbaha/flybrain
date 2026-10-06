@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>flyworld — embodied fly brains</title>
+<link rel="stylesheet" href="style.css">
+<script src="three.min.js"></script>
+</head>
+<body>
+<div id="app">
+  <canvas id="scene"></canvas>
+  <div id="hud">
+    <h1>flyworld</h1>
+    <div id="flies"></div>
+    <div class="row">
+      <button id="btn-pause">pause</button>
+      <button id="btn-food" class="toggle">+ food: off</button>
+      <button id="btn-clear">clear food</button>
+      <button id="btn-reset">reset</button>
+    </div>
+    <p class="hint">drag: orbit &middot; wheel: zoom &middot; right-drag: pan<br>
+    food mode on: click the floor to drop food</p>
+    <p class="note">Brains drive P9 descending neurons (forward-walk command).
+    Odor &rarr; bilateral antennae &rarr; hub neurons (Poisson Hz).
+    Near food &rarr; sugar GRNs @@ 200 Hz (taste).</p>
+  </div>
+  <div id="status">connecting&hellip;</div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

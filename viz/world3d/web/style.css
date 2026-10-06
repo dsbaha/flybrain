@@ -1,0 +1,26 @@
+html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0e14;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #dfe6f3; }
+#app { position: fixed; inset: 0; }
+#scene { width: 100%; height: 100%; display: block; cursor: crosshair; }
+#hud { position: absolute; top: 12px; left: 12px; width: 300px;
+  background: rgba(10, 14, 22, 0.82); border: 1px solid #2a3348;
+  border-radius: 10px; padding: 12px 14px; font-size: 12px; }
+#hud h1 { margin: 0 0 8px; font-size: 15px; letter-spacing: 1px; color: #9fd0ff; }
+.fly { border-left: 4px solid #fff; padding: 4px 8px; margin: 6px 0;
+  background: rgba(255,255,255,0.03); border-radius: 0 6px 6px 0; }
+.fly .nm { font-weight: bold; }
+.fly .st { float: right; color: #9fd0ff; }
+.fly .bar { height: 5px; background: #1c2333; border-radius: 3px; margin-top: 4px; }
+.fly .bar > div { height: 100%; border-radius: 3px; background: #69f0ae; }
+.fly .meta { color: #8b96ad; margin-top: 3px; }
+.row { margin-top: 10px; display: flex; gap: 6px; flex-wrap: wrap; }
+button { background: #1c2942; color: #dfe6f3; border: 1px solid #2a3a5e;
+  border-radius: 6px; padding: 6px 10px; font: inherit; cursor: pointer; }
+button:hover { background: #27395c; }
+button.toggle.on { background: #3d5a26; border-color: #69f0ae; }
+.hint { color: #8b96ad; font-size: 11px; line-height: 1.5; }
+.note { color: #6b7690; font-size: 10.5px; line-height: 1.5;
+  border-top: 1px solid #232c42; padding-top: 8px; }
+#status { position: absolute; bottom: 12px; left: 12px; font-size: 12px;
+  color: #8b96ad; background: rgba(10,14,22,0.82); padding: 6px 10px;
+  border-radius: 6px; border: 1px solid #2a3348; }

@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>flyviz — live fly-brain world</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>flyviz</h1>
+  <p id="subtitle">connecting…</p>
+</header>
+<main>
+  <section class="world">
+    <canvas id="cv" width="640" height="640"></canvas>
+    <p class="hint">click anywhere to move the odor source</p>
+  </section>
+  <aside class="panel">
+    <div class="row btns">
+      <button id="bPause">pause</button>
+      <button id="bReset">reset</button>
+      <button id="bBeacon">random beacon</button>
+    </div>
+    <h2>sensors → brain</h2>
+    <div id="sens" class="bars"></div>
+    <h2>brain → motors</h2>
+    <div id="motor" class="bars"></div>
+    <h2>battery</h2>
+    <div class="bar" id="battBar"><div class="fill batt"></div><span></span><span class="lbl">charge</span></div>
+    <h2>brain stats</h2>
+    <dl id="stats"></dl>
+    <p id="mapnote" class="note"></p>
+  </aside>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

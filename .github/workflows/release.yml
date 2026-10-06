@@ -1,0 +1,60 @@
+name: release
+
+# Builds the Go binaries and attaches them to the GitHub release page.
+#
+# How to cut a release:
+#   git tag v0.2.0 && git push origin v0.2.0
+# The workflow builds flybrain + flyworld for linux/amd64, generates
+# SHA256SUMS, and uploads all three as release assets.
+#
+# "Build binaries" (workflow_dispatch / any branch push) runs the same
+# compile + vet as a smoke check without publishing.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write # needed to create the release and upload assets
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build flybrain
+        run: |
+          CGO_ENABLED=1 go build -trimpath -o dist/flybrain-linux-amd64 .
+          chmod +x dist/flybrain-linux-amd64
+
+      - name: Build flyworld (3D multi-brain world)
+        run: |
+          CGO_ENABLED=1 go build -trimpath -o dist/flyworld-linux-amd64 ./viz/world3d
+          chmod +x dist/flyworld-linux-amd64
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum flybrain-linux-amd64 flyworld-linux-amd64 > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/flybrain-linux-amd64
+            dist/flyworld-linux-amd64
+            dist/SHA256SUMS.txt
+          generate_release_notes: true

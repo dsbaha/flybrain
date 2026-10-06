@@ -1,0 +1,23 @@
+# Build outputs
+flybrain
+flyworld
+flyviz
+*.exe
+
+# Go build cache / module cache
+.gocache/
+
+# Data (large, fetched with --fetch-connectome)
+/flywire-data/
+*.fbc
+*.feather
+*.tsv
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Local notes
+TOOLS.md
