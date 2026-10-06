@@ -330,7 +330,7 @@ function onSnapshot(s) {
       `<span class="nm">${fs.name}</span><span class="st">${fs.state}</span>` +
       `<div class="bar"><div style="width:${(fs.battery * 100).toFixed(0)}%"></div></div>` +
       `<div class="meta">DNp09 ${fs.p9L.toFixed(0)}/${fs.p9R.toFixed(0)} Hz` +
-      ` · DNb05 ${fs.dnb05.toFixed(1)} · PN ${fs.pn.toFixed(0)} · MDN ${fs.mdn.toFixed(0)}` +
+      ` · DNb05 ${fs.dnb05.toFixed(1)} · PN ${fs.pnL.toFixed(0)}/${fs.pnR.toFixed(0)} · MDN ${fs.mdn.toFixed(0)}` +
       ` · ant ${fs.antL.toFixed(2)}/${fs.antR.toFixed(2)}` +
       ` · brain ${fs.brain.hz.toFixed(2)} Hz</div>`;
     hud.appendChild(el);

@@ -384,6 +384,7 @@ type Fly struct {
 	mdnC    uint64
 	pnL, pnR       []int   // food-glomerulus PNs (the real odor signal)
 	pnLRate, pnRRate float64
+	pnLSm, pnRSm float64 // smoothed (EMA) for steering — raw 50ms rates are noisy
 	pnLC, pnRC     []uint64
 	antL, antR    float64    // odor 0..1 at antennae
 	speed         float64
@@ -724,6 +725,11 @@ func (w *World) advance(f *Fly) error {
 			if nR > 0 {
 				f.pnRRate = pnSumR / float64(nR)
 			}
+			// EMA smoothing (alpha=0.2): tames Poisson noise in 50ms rate windows.
+			// Without this, the L/R difference is dominated by noise, not the gradient.
+			const pnAlpha = 0.2
+			f.pnLSm += pnAlpha * (f.pnLRate - f.pnLSm)
+			f.pnRSm += pnAlpha * (f.pnRRate - f.pnRSm)
 		}
 	}
 	f.p9LC, f.p9RC, f.dnb05LC, f.dnb05RC, f.mdnC = cl[0], cr[0], bl[0], br[0], md[0]
@@ -778,7 +784,7 @@ func (w *World) advance(f *Fly) error {
 	turn := 0.0
 	if tumble {
 		dir := 1.0
-		if f.pnLRate < f.pnRRate {
+		if f.pnLSm < f.pnRSm {
 			dir = -1.0
 		}
 		if rand.Float64() < 0.25 {
@@ -877,7 +883,7 @@ func (w *World) snapshot() map[string]any {
 			"state": state, "speed": f.speed,
 			"antL": f.antL, "antR": f.antR,
 			"p9L": f.p9LRate, "p9R": f.p9RRate,
-			"dnb05": (f.dnb05LRate+f.dnb05RRate)/2, "pn": (f.pnLRate+f.pnRRate)/2, "mdn": f.mdnRate,
+			"dnb05": (f.dnb05LRate+f.dnb05RRate)/2, "pn": (f.pnLRate+f.pnRRate)/2, "pnL": f.pnLSm, "pnR": f.pnRSm, "mdn": f.mdnRate,
 			"brain": map[string]any{
 				"steps": f.steps, "simMs": f.simMs,
 				"spikes": f.spikes, "hz": f.instHz,
