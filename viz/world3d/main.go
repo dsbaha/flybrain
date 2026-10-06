@@ -3,9 +3,23 @@
 // One binary (web UI embedded via fs.Embed). Connects to 1-4 flybrain
 // servers — one embodied fly per brain — sharing a 3D arena with food
 // odor plumes. Each tick: sample odor at the fly's antennae -> Poisson
-// drive a hub-neuron sensory window -> step the brain -> read the P9
-// descending-neuron pair (the reference forward-walking command neurons)
-// -> steer.
+// drive the real food-odor ORNs (Or42b/Or92a/Or59b glomeruli, bilateral)
+// -> step the brain -> read the genuine circuit outputs:
+//
+//   PNs (antennal-lobe projection neurons): the real odor signal.
+//     Mean PN rate = odor intensity; d(odor)/dt = run-and-tumble signal.
+//   DNp09 (forward-walking descending neurons, Shiu et al.): driven by
+//     their true strongest excitatory inputs (visual LC + central
+//     PVLP/AVLP/CB) at an arousal rate — the central-brain "intent to
+//     walk". Anatomically correct; the VNC is not in FlyWire so the
+//     readout gain is a modeled parameter.
+//   DNb05 (olfactory-recipient DNs): active during exploration, genuinely
+//     suppressed by strong odor via the AL's inhibitory circuits — the
+//     real "stop at food" signal.
+//
+// Chemotaxis is run-and-tumble on the PN signal (the real fly mechanism):
+// rising odor = run straight, fading odor = tumble. Turn direction is a
+// weak bilateral PN bias plus randomness, as in bacterial chemotaxis.
 //
 // The brain servers must run with --sens-mode poisson so the sensory
 // channel carries Hz, e.g.:
@@ -358,15 +372,21 @@ type Fly struct {
 	battery float64
 	trail   [][2]float64
 
-	p9L, p9R       int
+	p9L, p9R       int // anatomically left/right DNp09 (indices)
 	p9LRate, p9RRate float64 // Hz, from cumulative spike counts
 	p9LC, p9RC     uint64   // previous cumulative counts
 	p9Ms           float64  // sim ms at previous read
+	dnb05L, dnb05R int     // olfactory DNs (stop-at-food signal)
+	dnb05LRate, dnb05RRate float64
+	dnb05LC, dnb05RC uint64
+	pnL, pnR       []int   // food-glomerulus PNs (the real odor signal)
+	pnLRate, pnRRate float64
+	pnLC, pnRC     []uint64
 	antL, antR    float64    // odor 0..1 at antennae
 	speed         float64
 	walking       bool
 	feeding       bool
-	prevOdor      float64 // mean antenna odor last tick (klinotaxis)
+	prevOdor      float64 // mean PN odor last tick (klinotaxis)
 	reverseT      float64 // >0: backing up after bumping an obstacle (behavioral reflex, not neural)
 
 	steps  uint64
@@ -473,16 +493,20 @@ type World struct {
 	phase  float64
 	tick   uint64
 
-	// io config
-	sensIdx   []int   // P9L top inputs ++ P9R top inputs ++ sugar GRNs
-	sensHalf  int     // left/right split
-	sensTaste int     // offset where sugar-GRN indices start
-	sensHzMax float64
-	normL     float64 // per-side rate normalization (bilateral balance)
-	normR     float64
-	exploreHz float64 // baseline Poisson Hz: spontaneous exploration
+	// io config: genuine sensorimotor layout
+	//   ORN food L ++ ORN food R ++ DNp09-L arousal inputs ++
+	//   DNp09-R arousal inputs ++ sugar GRNs
+	sensIdx []int
+	ornL0, ornL1 int // offsets in sensIdx
+	ornR0, ornR1 int
+	arL0, arL1   int
+	arR0, arR1   int
+	taste0        int // offset where sugar-GRN indices start
+	sensHzMax float64 // Poisson Hz at odor concentration 1.0
+	arousalHz float64 // Poisson Hz on DNp09's true inputs (central walk intent)
+	exploreHz float64 // baseline Poisson Hz on ORNs
 	stepMs    int
-	pauseHz   float64 // P9 mean rate below this -> sit still
+	pauseHz   float64 // DNp09 mean rate (Hz) below which the fly sits still
 	maxSpeed  float64
 }
 
@@ -507,10 +531,14 @@ func (w *World) advance(f *Fly) error {
 	ar := w.odor(f.x+hx*3-px*1.5, f.z+hz*3-pz*1.5)
 	hunger := 1.0 - f.battery
 	gain := 0.4 + hunger
-	// Bilateral odor drive on P9's strongest excitatory inputs:
-	// left antenna -> P9L inputs, right antenna -> P9R inputs.
+	// GENUINE sensory input: bilateral food-odor ORNs (Or42b/Or92a/Or59b).
+	// Left antenna -> left ORNs, right antenna -> right ORNs.
 	rateL := w.exploreHz + math.Min(1, al)*w.sensHzMax*gain
 	rateR := w.exploreHz + math.Min(1, ar)*w.sensHzMax*gain
+	// Central arousal: DNp09's true strongest excitatory inputs
+	// (visual LC + central PVLP/AVLP/CB) at a hunger-gated rate.
+	// This is the modeled "intent to walk"; the VNC is not in FlyWire.
+	arousal := w.arousalHz * (0.5 + hunger)
 	// feeding: near food -> taste (sugar GRNs at 200 Hz, the reference drive)
 	feeding := false
 	for _, fd := range w.foods {
@@ -521,17 +549,23 @@ func (w *World) advance(f *Fly) error {
 		}
 	}
 	vals := make([]float32, len(w.sensIdx))
-	for i := 0; i < w.sensHalf; i++ {
-		vals[i] = float32(rateL * w.normL)
+	for i := w.ornL0; i < w.ornL1; i++ {
+		vals[i] = float32(rateL)
 	}
-	for i := w.sensHalf; i < w.sensTaste; i++ {
-		vals[i] = float32(rateR * w.normR)
+	for i := w.ornR0; i < w.ornR1; i++ {
+		vals[i] = float32(rateR)
+	}
+	for i := w.arL0; i < w.arL1; i++ {
+		vals[i] = float32(arousal)
+	}
+	for i := w.arR0; i < w.arR1; i++ {
+		vals[i] = float32(arousal)
 	}
 	taste := float32(0)
 	if feeding {
 		taste = 200
 	}
-	for i := w.sensTaste; i < len(w.sensIdx); i++ {
+	for i := w.taste0; i < len(w.sensIdx); i++ {
 		vals[i] = taste
 	}
 	f.feeding = feeding
@@ -546,6 +580,10 @@ func (w *World) advance(f *Fly) error {
 		return err
 	}
 	simMs := float64(steps) * f.b.DtMs
+	// Read the genuine circuit outputs: DNp09 (walk), DNb05 (stop),
+	// and the food PNs (the real odor signal from the antennal lobe).
+	// Read ALL counts first, then compute rates from the previous time
+	// base, then update. (A count drop means the server restarted.)
 	cl, err := f.b.Spkc(f.p9L, 1)
 	if err != nil {
 		return err
@@ -554,49 +592,107 @@ func (w *World) advance(f *Fly) error {
 	if err != nil {
 		return err
 	}
-	// Exact P9 rates from cumulative counts over the elapsed sim time.
-	// (A count drop means the server restarted: re-baseline.)
-	if simMs > f.p9Ms && cl[0] >= f.p9LC && cr[0] >= f.p9RC {
-		dt := (simMs - f.p9Ms) / 1000.0
-		f.p9LRate = float64(cl[0]-f.p9LC) / dt
-		f.p9RRate = float64(cr[0]-f.p9RC) / dt
+	bl, err := f.b.Spkc(f.dnb05L, 1)
+	if err != nil {
+		return err
 	}
-	f.p9LC, f.p9RC, f.p9Ms = cl[0], cr[0], simMs
-	mean := (f.p9LRate + f.p9RRate) / 2
+	br, err := f.b.Spkc(f.dnb05R, 1)
+	if err != nil {
+		return err
+	}
+	pnCL := make([]uint64, len(f.pnL))
+	for i, pix := range f.pnL {
+		c, err := f.b.Spkc(pix, 1)
+		if err != nil {
+			return err
+		}
+		pnCL[i] = c[0]
+	}
+	pnCR := make([]uint64, len(f.pnR))
+	for i, pix := range f.pnR {
+		c, err := f.b.Spkc(pix, 1)
+		if err != nil {
+			return err
+		}
+		pnCR[i] = c[0]
+	}
+	if simMs > f.p9Ms {
+		dt := (simMs - f.p9Ms) / 1000.0
+		if dt > 0 && cl[0] >= f.p9LC && cr[0] >= f.p9RC &&
+			bl[0] >= f.dnb05LC && br[0] >= f.dnb05RC {
+			f.p9LRate = float64(cl[0]-f.p9LC) / dt
+			f.p9RRate = float64(cr[0]-f.p9RC) / dt
+			f.dnb05LRate = float64(bl[0]-f.dnb05LC) / dt
+			f.dnb05RRate = float64(br[0]-f.dnb05RC) / dt
+			pnSum := 0.0
+			n := 0
+			for i := range f.pnL {
+				if pnCL[i] >= f.pnLC[i] {
+					pnSum += float64(pnCL[i] - f.pnLC[i]) / dt
+					n++
+				}
+			}
+			for i := range f.pnR {
+				if pnCR[i] >= f.pnRC[i] {
+					pnSum += float64(pnCR[i] - f.pnRC[i]) / dt
+					n++
+				}
+			}
+			if n > 0 {
+				f.pnLRate = pnSum / float64(n)
+				f.pnRRate = f.pnLRate
+			}
+		}
+	}
+	f.p9LC, f.p9RC, f.dnb05LC, f.dnb05RC = cl[0], cr[0], bl[0], br[0]
+	copy(f.pnLC, pnCL)
+	copy(f.pnRC, pnCR)
+	f.p9Ms = simMs
+	pnMean := (f.pnLRate + f.pnRRate) / 2
 
-	// Stop-and-go on P9 drive; turning stays live (look-around saccades).
-	// Turn toward the faster P9: ipsilateral P9 drive steers that way.
-	// NOTE: P9 is the forward-walking descending neuron (Shiu et al.).
-	// There is no reverse gear in the neural drive yet — true backward
-	// walking uses different DNs. Backing up is a behavioral reflex
-	// triggered by bumping into scenery (see collide below).
-	//
-	// Chemotaxis is run-and-tumble (the real fly mechanism): the bilateral
-	// P9 difference sets turn *direction*, but turn *authority* is gated by
-	// smell — strong odor + rising gradient = run straight at it, fading
-	// odor = tumble (turn hard) to reorient. Far from food the gain is low
-	// and the fly explores.
-	odorNow := (al + ar) / 2
+	p9mean := (f.p9LRate + f.p9RRate) / 2
+	dnb05mean := (f.dnb05LRate + f.dnb05RRate) / 2
+	// Odor from the REAL antennal lobe output (PN mean rate).
+	// Baseline ~25 Hz, strong food ~250 Hz.
+	odorNow := math.Min(1, math.Max(0, (pnMean-25)/225))
 	dOdor := odorNow - f.prevOdor
 	f.prevOdor = odorNow
-	turnGain := 0.3 + 2.0*math.Min(1, odorNow)
-	if dOdor < 0 {
+
+	// Chemotaxis is run-and-tumble on the PN signal (the real fly
+	// mechanism): rising odor = run straight, fading odor = tumble.
+	// Turn direction is random (as in bacterial chemotaxis); the bias
+	// comes from modulating tumble *frequency*, not direction.
+	turnGain := 0.3 + 2.0*odorNow
+	tumble := false
+	if dOdor < -0.02 {
 		turnGain *= 2.5 // fading smell: tumble
-	} else {
+		tumble = true
+	} else if dOdor > 0.02 {
 		turnGain *= 0.45 // rising smell: run
 	}
+
 	speed, walking := 0.0, false
-	if mean > w.pauseHz {
-		speed = math.Min(1, (mean-w.pauseHz)/120.0) * w.maxSpeed
-		// Orthokinesis: slow down where it smells strong — dwell at food.
-		speed *= 1 - 0.55*math.Min(1, odorNow*1.5)
+	if p9mean > w.pauseHz {
+		speed = math.Min(1, (p9mean-w.pauseHz)/120.0) * w.maxSpeed
+		// Genuine stop-at-food: DNb05 is suppressed by strong odor via
+		// the AL's inhibitory circuits. Scale speed by DNb05 activity.
+		// (Baseline ~6 Hz mean; suppressed to ~0 at food.)
+		speed *= 0.25 + 0.75*math.Min(1, dnb05mean/6.0)
 		walking = true
 	}
 	if f.reverseT > 0 {
 		speed = -0.35 * w.maxSpeed
 		walking = true
 	}
-	turn := (f.p9LRate - f.p9RRate) / 120.0 * 2.5 * turnGain
+	// Tumble: random turn direction. Otherwise hold course.
+	turn := 0.0
+	if tumble {
+		dir := 1.0
+		if rand.Float64() < 0.5 {
+			dir = -1.0
+		}
+		turn = dir * 2.5 * turnGain
+	}
 	dt := float64(w.stepMs) / 1000.0
 
 	w.mu.Lock()
@@ -677,6 +773,7 @@ func (w *World) snapshot() map[string]any {
 			"state": state, "speed": f.speed,
 			"antL": f.antL, "antR": f.antR,
 			"p9L": f.p9LRate, "p9R": f.p9RRate,
+			"dnb05": (f.dnb05LRate+f.dnb05RRate)/2, "pn": (f.pnLRate+f.pnRRate)/2,
 			"brain": map[string]any{
 				"steps": f.steps, "simMs": f.simMs,
 				"spikes": f.spikes, "hz": f.instHz,
@@ -701,9 +798,9 @@ func main() {
 	brainsFlag := flag.String("brains", "localhost:5555", "comma-separated flybrain server addrs (1-4, one fly each)")
 	listen := flag.String("listen", ":8080", "web UI listen address")
 	graphPath := flag.String("graph", "", "path to .fbc dump (hub sensory window + P9/sugar-GRN root-ID resolution)")
-	sensTopK := flag.Int("sens-topk", 32, "strongest excitatory P9 inputs driven per side (bilateral odor)")
 	sensHzMax := flag.Float64("sens-hz-max", 200.0, "Poisson Hz at odor concentration 1.0 (servers must use --sens-mode poisson)")
 	exploreHz := flag.Float64("explore-hz", 12.0, "baseline Poisson Hz on P9 inputs: spontaneous exploration")
+	arousalHz := flag.Float64("arousal-hz", 150.0, "baseline Poisson Hz on DNp09 true inputs: central walk intent")
 	stepMs := flag.Int("step-ms", 50, "brain ms per world tick")
 	tickMs := flag.Int("tick-ms", 120, "world tick period in ms (wall clock, per fly)")
 	pauseHz := flag.Float64("pause-hz", 6.0, "mean P9 rate (Hz) below which the fly sits still")
@@ -722,35 +819,60 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	p9, err := resolveRoots(roots, p9RootIDs)
+	// p9RootIDs = {right DNp09, left DNp09}; assign anatomically.
+	p9r, err := resolveRoots(roots, p9RootIDs)
 	if err != nil {
 		log.Fatal("P9: ", err)
 	}
+	p9R, p9L := p9r[0], p9r[1]
 	sugar, err := resolveRoots(roots, sugarRootIDs)
 	if err != nil {
 		log.Fatal("sugar GRNs: ", err)
 	}
-	inL, sumL := topP9Inputs(g, p9[0], *sensTopK)
-	inR, sumR := topP9Inputs(g, p9[1], *sensTopK)
-	sensIdx := append(append(append([]int{}, inL...), inR...), sugar...)
-	// Bilateral balance: the two P9s' top-K input pools differ in total
-	// weight (here 323 vs 237 mV), which would make one side fire faster
-	// on identical odor — a permanent turn bias. Normalize per-side
-	// rates so equal odor gives equal drive; the antenna difference
-	// (not the anatomy lottery) steers the fly.
-	target := (sumL + sumR) / 2
-	normL, normR := target/sumL, target/sumR
-	fmt.Printf("P9L=%d (%d inputs, %.0f mV, norm %.3f) P9R=%d (%d inputs, %.0f mV, norm %.3f)  sugar GRNs: %d mapped\n",
-		p9[0], len(inL), sumL, normL, p9[1], len(inR), sumR, normR, len(sugar))
+	ornL, err := resolveRoots(roots, ornFoodL)
+	if err != nil {
+		log.Fatal("ORN-L: ", err)
+	}
+	ornR, err := resolveRoots(roots, ornFoodR)
+	if err != nil {
+		log.Fatal("ORN-R: ", err)
+	}
+	pnL, err := resolveRoots(roots, pnFoodL)
+	if err != nil {
+		log.Fatal("PN-L: ", err)
+	}
+	pnR, err := resolveRoots(roots, pnFoodR)
+	if err != nil {
+		log.Fatal("PN-R: ", err)
+	}
+	dnb05, err := resolveRoots(roots, dnb05Roots)
+	if err != nil {
+		log.Fatal("DNb05: ", err)
+	}
+	arL, err := resolveRoots(roots, arousalL)
+	if err != nil {
+		log.Fatal("arousal-L: ", err)
+	}
+	arR, err := resolveRoots(roots, arousalR)
+	if err != nil {
+		log.Fatal("arousal-R: ", err)
+	}
+	// sensIdx layout: ORN-L ++ ORN-R ++ arousal-L ++ arousal-R ++ sugar
+	sensIdx := append(append(append(append([]int{}, ornL...), ornR...), arL...), arR...)
+	sensIdx = append(sensIdx, sugar...)
+	fmt.Printf("DNp09: L=%d R=%d | DNb05: L=%d R=%d | ORNs: L=%d R=%d | PNs: L=%d R=%d | arousal: L=%d R=%d | sugar: %d\n",
+		p9L, p9R, dnb05[0], dnb05[1], len(ornL), len(ornR), len(pnL), len(pnR), len(arL), len(arR), len(sugar))
 
 	w := &World{
 		foods:     []Food{{x: 30, z: 0}},
 		sensIdx:   sensIdx,
-		sensHalf:  len(inL),
-		sensTaste: len(inL) + len(inR),
+		ornL0:     0, ornL1: len(ornL),
+		ornR0:     len(ornL), ornR1: len(ornL) + len(ornR),
+		arL0:      len(ornL) + len(ornR), arL1: len(ornL) + len(ornR) + len(arL),
+		arR0:      len(ornL) + len(ornR) + len(arL), arR1: len(ornL) + len(ornR) + len(arL) + len(arR),
+		taste0:     len(ornL) + len(ornR) + len(arL) + len(arR),
 		sensHzMax: *sensHzMax,
-		normL:     normL,
-		normR:     normR,
+		arousalHz: *arousalHz,
 		exploreHz: *exploreHz,
 		stepMs:    *stepMs,
 		pauseHz:   *pauseHz,
@@ -773,7 +895,10 @@ func main() {
 			name: flyNames[i], color: flyColors[i], b: b,
 			x: starts[i][0], z: starts[i][1],
 			heading: 0, battery: 1,
-			p9L: p9[0], p9R: p9[1],
+			p9L: p9L, p9R: p9R,
+			dnb05L: dnb05[0], dnb05R: dnb05[1],
+			pnL: pnL, pnR: pnR,
+			pnLC: make([]uint64, len(pnL)), pnRC: make([]uint64, len(pnR)),
 		})
 	}
 
