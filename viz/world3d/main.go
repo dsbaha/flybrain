@@ -545,13 +545,13 @@ func (w *World) advance(f *Fly) error {
 	// not the visual LCs) at a hunger-gated rate. This is the modeled
 	// "intent to walk"; the VNC is not in FlyWire.
 	arousal := w.arousalHz * (0.5 + hunger)
-	// Vision: visual object detector. If food (a visual object) is in the
-	// forward 120-degree field of view, drive the visual LC neurons
-	// proportionally to proximity and centrality.
-	// NOTE: LC9's real function is tracking small moving objects and driving
-	// turns toward them (courtship literature), not "food detection." We use
-	// it as a generic visual-object signal. (Placeholder for true LC tuning.)
-	visSig := 0.0
+	// Vision: retinotopic visual object detector.
+	// LC9's real function is tracking small moving objects and driving turns
+	// toward them (courtship literature). We model:
+	// 1. Retinotopy: left LCs respond to objects on the left, right to right.
+	// 2. Size tuning: LC9 prefers small objects (peaks at intermediate distance).
+	// (Placeholder for true LC receptive fields.)
+	visSigL, visSigR := 0.0, 0.0
 	for _, fd := range w.foods {
 		dx, dz := fd.x-f.x, fd.z-f.z
 		dist := math.Hypot(dx, dz)
@@ -568,13 +568,34 @@ func (w *World) advance(f *Fly) error {
 		if math.Abs(ang) > math.Pi/3 {
 			continue // outside 120-degree FOV
 		}
+		// Size tuning: angular size ~ 1/dist. LC9 prefers small objects,
+		// so response peaks at intermediate distances, not right on top.
+		// Gaussian centered at dist=20, sigma=12.
+		sizeTuning := math.Exp(-math.Pow(dist-20, 2) / (2 * 144))
 		prox := 1 - dist/45
 		cent := 1 - math.Abs(ang)/(math.Pi/3)
-		if prox*cent > visSig {
-			visSig = prox * cent
+		sig := sizeTuning * (0.5 + 0.5*prox) * cent
+		// Retinotopy: object on left (ang>0) drives left LCs more.
+		// (In fly coordinates, positive angle = left of heading.)
+		if ang >= 0 {
+			if sig > visSigL {
+				visSigL = sig
+			}
+			// Contralateral gets weaker drive (broad tuning).
+			if sig*0.3 > visSigR {
+				visSigR = sig * 0.3
+			}
+		} else {
+			if sig > visSigR {
+				visSigR = sig
+			}
+			if sig*0.3 > visSigL {
+				visSigL = sig * 0.3
+			}
 		}
 	}
-	visRate := visSig * 150.0 // LC drive when food seen
+	visRateL := visSigL * 150.0 // left LC drive
+	visRateR := visSigR * 150.0 // right LC drive
 	// feeding: near food -> taste (sugar GRNs at 200 Hz, the reference drive)
 	feeding := false
 	for _, fd := range w.foods {
@@ -592,10 +613,10 @@ func (w *World) advance(f *Fly) error {
 		vals[i] = float32(rateR)
 	}
 	for i := w.visL0; i < w.visL1; i++ {
-		vals[i] = float32(visRate)
+		vals[i] = float32(visRateL)
 	}
 	for i := w.visR0; i < w.visR1; i++ {
-		vals[i] = float32(visRate)
+		vals[i] = float32(visRateR)
 	}
 	for i := w.cenL0; i < w.cenL1; i++ {
 		vals[i] = float32(arousal)
@@ -762,9 +783,20 @@ func (w *World) advance(f *Fly) error {
 	}
 	dt := float64(w.stepMs) / 1000.0
 
+	// Visual steering: LC9 drives turns toward objects (courtship literature).
+	// Retinotopic LCs -> DNp09 L/R difference -> turn toward the more active side.
+	// (Central arousal is symmetric, so L/R difference reflects visual input.)
+	visTurn := 0.0
+	p9sum := f.p9LRate + f.p9RRate
+	if p9sum > 20.0 {
+		visTurn = (f.p9LRate - f.p9RRate) / p9sum // + = left stronger = turn left
+	}
+	// Scale: full L/R difference (one side silent) = 1.5 rad/s turn.
+	visTurn *= 1.5
+
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	f.heading += turn * dt
+	f.heading += (turn + visTurn) * dt
 	if f.reverseT > 0 {
 		f.heading += 1.2 * dt // veer while backing up
 		f.reverseT -= dt
