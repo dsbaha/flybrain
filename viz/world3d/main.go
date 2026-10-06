@@ -553,16 +553,13 @@ func (w *World) advance(f *Fly) error {
 	px, pz := -hz, hx
 	al := w.odor(f.x+hx*3+px*1.5, f.z+hz*3+pz*1.5)
 	ar := w.odor(f.x+hx*3-px*1.5, f.z+hz*3-pz*1.5)
-	hunger := 1.0 - f.battery
-	gain := 0.4 + hunger
-	// GENUINE sensory input: bilateral food-odor ORNs (Or42b/Or92a/Or59b).
-	// Left antenna -> left ORNs, right antenna -> right ORNs.
-	rateL := w.exploreHz + math.Min(1, al)*w.sensHzMax*gain
-	rateR := w.exploreHz + math.Min(1, ar)*w.sensHzMax*gain
-	// Central arousal: DNp09's true CENTRAL inputs (PVLP/AVLP/CB,
-	// not the visual LCs) at a hunger-gated rate. This is the modeled
-	// "intent to walk"; the VNC is not in FlyWire.
-	arousal := w.arousalHz * (0.5 + hunger)
+	// GENUINE sensory input only: bilateral food-odor ORNs.
+	// No hunger gain, no arousal injection. The brain decides.
+	rateL := w.exploreHz + math.Min(1, al)*w.sensHzMax
+	rateR := w.exploreHz + math.Min(1, ar)*w.sensHzMax
+	// NOTE: Central arousal REMOVED. Previously: Go injected 150Hz into
+	// DNp09's central inputs as "intent to walk". The brain/VNC must now
+	// initiate walking via real wiring, or the fly stays still.
 	// Vision: retinotopic visual object detector.
 	// LC9's real function is tracking small moving objects and driving turns
 	// toward them (courtship literature). We model:
@@ -637,11 +634,13 @@ func (w *World) advance(f *Fly) error {
 	for i := w.visR0; i < w.visR1; i++ {
 		vals[i] = float32(visRateR)
 	}
+	// Central inputs: NO artificial arousal. The brain must drive these
+	// via real wiring, or they stay silent.
 	for i := w.cenL0; i < w.cenL1; i++ {
-		vals[i] = float32(arousal)
+		vals[i] = 0
 	}
 	for i := w.cenR0; i < w.cenR1; i++ {
-		vals[i] = float32(arousal)
+		vals[i] = 0
 	}
 	// Neural reverse: drive MDN's excitatory inputs when backing up.
 	// (Bidaye et al. 2014: MDN required for backward walking at obstacles.)
@@ -659,7 +658,8 @@ func (w *World) advance(f *Fly) error {
 	for i := w.taste0; i < len(w.sensIdx); i++ {
 		vals[i] = taste
 	}
-	f.feeding = feeding
+	// NOTE: f.feeding state label REMOVED. The GRN drive above is sensory
+	// transduction (food contact -> taste). No behavioral state is set by Go.
 	f.antL, f.antR = al, ar
 	w.mu.Unlock()
 
@@ -761,46 +761,16 @@ func (w *World) advance(f *Fly) error {
 	// Odor from the REAL antennal lobe output (PN mean rate).
 	// Baseline ~25 Hz, strong food ~250 Hz.
 	odorNow := math.Min(1, math.Max(0, (pnMean-25)/225))
-	dOdor := odorNow - f.prevOdor
-	f.prevOdor = odorNow
-
-	// Chemotaxis is run-and-tumble on the PN signal (the real fly
-	// mechanism): rising odor = run straight, fading odor = tumble.
-	// Turn direction is random (as in bacterial chemotaxis); the bias
-	// comes from modulating tumble *frequency*, not direction.
-	turnGain := 0.3 + 2.0*odorNow
-	tumble := false
-	if dOdor < -0.02 {
-		turnGain *= 2.5 // fading smell: tumble
-		tumble = true
-	} else if dOdor > 0.02 {
-		turnGain *= 0.45 // rising smell: run
-	}
+	_ = odorNow // (used for sensory drive only, not behavioral decisions)
+	_ = dnb05mean
 
 	speed, walking := 0.0, false
 	if p9mean > w.pauseHz {
 		speed = math.Min(1, (p9mean-w.pauseHz)/120.0) * w.maxSpeed
-		// Genuine stop-at-food: DNb05 is suppressed by strong odor via
-		// the AL's inhibitory circuits. Scale speed by DNb05 activity.
-		// (Baseline ~6 Hz mean; suppressed to ~0 at food.)
-		speed *= 0.25 + 0.75*math.Min(1, dnb05mean/6.0)
 		walking = true
 	}
-
-	// Pause-to-sample (klinotaxis): when odor is detected but the bilateral
-	// gradient is shallow, the fly pauses to sample temporally. This creates
-	// the stop-and-go bouts seen in real flies.
-	// (Biological basis: central complex gates walking bouts during odor sampling.)
-	if walking && odorNow > 0.15 {
-		bilateralDiff := math.Abs(f.pnLRate - f.pnRRate) / (pnMean + 1.0)
-		if bilateralDiff < 0.2 {
-			// Gradient unclear: pause to sample (5 ticks on, 15 off = bout structure)
-			if w.tick%20 < 5 {
-				walking = false
-				speed = 0
-			}
-		}
-	}
+	// NOTE: No artificial tumble, pause, or DNb05 speed scaling.
+	// The brain/VNC must produce these via real wiring.
 
 	// Neural reverse: if MDN (moonwalker) is firing, walk backward.
 	// (Bidaye et al.: MDN sufficient for backward walking.)
@@ -812,23 +782,10 @@ func (w *World) advance(f *Fly) error {
 		walking = true
 	}
 	// Tumble: turn direction biased toward the stronger PN side
-	// (the bilateral odor gradient, as encoded by the real antennal lobe).
-	// Uses the NEURAL PN left/right difference, not raw world concentrations.
-	// GATED BY VISION: only when food not seen (visSig low). When vision is
-	// available, the retinotopic LC->DNp09 steering handles it. This avoids
-	// the olfactory tumble fighting the visual steering in closed loop.
-	// 75% toward the stronger side, 25% random (stochastic like real tumbles).
+	// Tumble removed: the brain/VNC must produce turning via real wiring.
+	// (Previously: Go-coded run-and-tumble on PN dOdor.)
 	turn := 0.0
-	if tumble && f.visSig < 0.1 {
-		dir := 1.0
-		if f.pnLSm < f.pnRSm {
-			dir = -1.0
-		}
-		if rand.Float64() < 0.25 {
-			dir = -dir // occasional random reversal
-		}
-		turn = dir * 2.5 * turnGain
-	}
+	_ = turn
 	dt := float64(w.stepMs) / 1000.0
 
 	// Visual steering: LC9 drives turns toward objects (courtship literature).
@@ -873,16 +830,8 @@ func (w *World) advance(f *Fly) error {
 	} else {
 		f.speed = 0
 	}
-	if feeding {
-		f.battery = math.Min(1, f.battery+0.02)
-	} else {
-		f.battery = math.Max(0, f.battery-0.0006)
-	}
-	if f.battery <= 0 {
-		// The fly starves. No teleport, no reset — death is permanent.
-		// (If the neural circuit can't keep it alive, it dies.)
-		f.battery = 0
-	}
+	// NOTE: Battery/hunger system REMOVED. No artificial metabolism.
+	// The brain must regulate behavior via real wiring.
 	f.trail = append(f.trail, [2]float64{f.x, f.z})
 	if len(f.trail) > 200 {
 		f.trail = f.trail[len(f.trail)-200:]
@@ -906,8 +855,6 @@ func (w *World) snapshot() map[string]any {
 		copy(trail, f.trail)
 		state := "still"
 		switch {
-		case f.feeding:
-			state = "feeding"
 		case f.reverseT > 0:
 			state = "reversing"
 		case f.walking:
