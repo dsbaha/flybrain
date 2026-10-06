@@ -357,7 +357,10 @@ func resolveRoots(roots []uint64, want []uint64) ([]int, error) {
 
 const (
 	arenaHalf = 50.0 // arena is 100x100 units
-	plumeSig  = 22.0 // odor plume sigma
+	plumeSig  = 22.0 // odor plume sigma (cross-wind)
+	plumeLen  = 60.0 // odor plume length (downwind)
+	windX     = 0.7  // wind vector (normalized)
+	windZ     = 0.7
 )
 
 var flyColors = []string{"#ff5252", "#448aff", "#69f0ae", "#ffea00"}
@@ -523,7 +526,20 @@ func (w *World) odor(x, z float64) float64 {
 	c := 0.0
 	for _, f := range w.foods {
 		dx, dz := x-f.x, z-f.z
-		c += math.Exp(-(dx*dx + dz*dz) / (2 * plumeSig * plumeSig))
+		// Wind-advected plume: elongate downwind, narrow cross-wind
+		downwind := dx*windX + dz*windZ
+		crossX := dx - downwind*windX
+		crossZ := dz - downwind*windZ
+		crossDist := math.Sqrt(crossX*crossX + crossZ*crossZ)
+		var d2 float64
+		if downwind > 0 {
+			// Downwind: long plume
+			d2 = (downwind*downwind)/(plumeLen*plumeLen) + (crossDist*crossDist)/(plumeSig*plumeSig)
+		} else {
+			// Upwind: short (diffusion only)
+			d2 = (downwind*downwind)/(plumeSig*plumeSig) + (crossDist*crossDist)/(plumeSig*plumeSig)
+		}
+		c += math.Exp(-d2 / 2)
 	}
 	flick := 0.85 + 0.15*math.Sin(w.phase+x*0.05)*math.Sin(w.phase*0.7+z*0.06)
 	return c * flick
@@ -771,6 +787,21 @@ func (w *World) advance(f *Fly) error {
 		walking = true
 	}
 
+	// Pause-to-sample (klinotaxis): when odor is detected but the bilateral
+	// gradient is shallow, the fly pauses to sample temporally. This creates
+	// the stop-and-go bouts seen in real flies.
+	// (Biological basis: central complex gates walking bouts during odor sampling.)
+	if walking && odorNow > 0.15 {
+		bilateralDiff := math.Abs(f.pnLRate - f.pnRRate) / (pnMean + 1.0)
+		if bilateralDiff < 0.2 {
+			// Gradient unclear: pause to sample (5 ticks on, 15 off = bout structure)
+			if w.tick%20 < 5 {
+				walking = false
+				speed = 0
+			}
+		}
+	}
+
 	// Neural reverse: if MDN (moonwalker) is firing, walk backward.
 	// (Bidaye et al.: MDN sufficient for backward walking.)
 	if f.mdnRate > 20.0 {
@@ -914,6 +945,7 @@ func main() {
 	brainsFlag := flag.String("brains", "localhost:5555", "comma-separated flybrain server addrs (1-4, one fly each)")
 	listen := flag.String("listen", ":8080", "web UI listen address")
 	graphPath := flag.String("graph", "", "path to .fbc dump (hub sensory window + P9/sugar-GRN root-ID resolution)")
+	connectome := flag.String("connectome", "fafb", "connectome ID set: fafb (FlyWire v783) or banc (BANC v888 female brain+VNC)")
 	sensHzMax := flag.Float64("sens-hz-max", 200.0, "Poisson Hz at odor concentration 1.0 (servers must use --sens-mode poisson)")
 	exploreHz := flag.Float64("explore-hz", 12.0, "baseline Poisson Hz on P9 inputs: spontaneous exploration")
 	arousalHz := flag.Float64("arousal-hz", 150.0, "baseline Poisson Hz on DNp09 true inputs: central walk intent")
@@ -923,6 +955,27 @@ func main() {
 	maxSpeed := flag.Float64("max-speed", 14.0, "fly speed at full P9 drive (units/s)")
 	seed := flag.Int64("seed", 7, "RNG seed for tree/rock scenery layout")
 	flag.Parse()
+
+	// Select connectome ID set.
+	if *connectome == "banc" {
+		p9RootIDs = banc_p9RootIDs
+		sugarRootIDs = banc_sugarRootIDs
+		ornFoodL = banc_ornFoodL
+		ornFoodR = banc_ornFoodR
+		pnFoodL = banc_pnFoodL
+		pnFoodR = banc_pnFoodR
+		visL = banc_visL
+		visR = banc_visR
+		cenL = banc_cenL
+		cenR = banc_cenL // BANC right DNp09 mirrored from left (data gap); use same central drive
+		dnb05Roots = banc_dnb05Roots
+		mdnDrive = banc_mdnDrive
+		// MDN roots for readout
+		// (mdnIdx resolved from banc_mdnRoots below)
+		fmt.Printf("Using BANC v888 connectome (female brain+VNC)\n")
+	} else if *connectome != "fafb" {
+		log.Fatalf("unknown --connectome %q (want fafb or banc)", *connectome)
+	}
 
 	addrs := strings.Split(*brainsFlag, ",")
 	if len(addrs) < 1 || len(addrs) > 4 {
@@ -965,7 +1018,11 @@ func main() {
 	if err != nil {
 		log.Fatal("DNb05: ", err)
 	}
-	mdnIdx, err := resolveRoots(roots, []uint64{720575940640331472, 720575940610236514, 720575940631082808, 720575940616026939})
+	mdnRoots := []uint64{720575940640331472, 720575940610236514, 720575940631082808, 720575940616026939}
+	if *connectome == "banc" {
+		mdnRoots = []uint64{720575941491012809, 720575941597827697, 720575941690515574, 720575941592674814}
+	}
+	mdnIdx, err := resolveRoots(roots, mdnRoots)
 	if err != nil {
 		log.Fatal("MDN: ", err)
 	}
