@@ -1,11 +1,7 @@
 package main
 
-// BANC v888 genuine chemotaxis DNs
-// Found via BFS: food PNs -> DNs (≤4 hops)
-// DNpe046 and DNpe046 receive DIRECT input from DM2_lPN (1 hop)
-var banc_DNpe046_L = uint64(720575941689707020)
-var banc_DNpe046_R = uint64(720575941521330904)
+// BANC v888 genuine chemotaxis DNs (corrected)
+// DNpe046: DM2_lPN -> DNpe046 direct (1 hop), excitatory, targets VNC
+// DNc01 was wrong (inhibitory brain interneuron, not descending)
 var banc_DNpe046_L = uint64(720575941626745452)
 var banc_DNpe046_R = uint64(720575941417243164)
-var banc_DNp32_L = uint64(720575941645363045)
-var banc_DNp32_R = uint64(720575941472733451)
