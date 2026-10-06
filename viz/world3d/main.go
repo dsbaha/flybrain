@@ -385,6 +385,9 @@ type Fly struct {
 	dnb05L, dnb05R int     // olfactory DNs (stop-at-food signal)
 	dnb05LRate, dnb05RRate float64
 	dnb05LC, dnb05RC uint64
+	dna02L, dna02R int     // DNa02 L/R (THE steering DN, Maimon lab Nature 2024)
+	dna02LRate, dna02RRate float64
+	dna02LC, dna02RC uint64
 	mdnIdx  []int   // moonwalker DN indices
 	mdnRate float64 // moonwalker DN mean rate (neural reverse)
 	mdnC    uint64
@@ -694,6 +697,18 @@ func (w *World) advance(f *Fly) error {
 	if err != nil {
 		return err
 	}
+	// DNa02: THE steering DN (Maimon lab)
+	var a02l, a02r []uint64
+	if f.dna02L >= 0 {
+		a02l, err = f.b.Spkc(f.dna02L, 1)
+		if err != nil {
+			return err
+		}
+		a02r, err = f.b.Spkc(f.dna02R, 1)
+		if err != nil {
+			return err
+		}
+	}
 	// MDN: read moonwalker neurons
 	md, err := f.b.Spkc(f.mdnIdx[0], 1)
 	if err != nil {
@@ -736,6 +751,13 @@ func (w *World) advance(f *Fly) error {
 			f.dnb05LRate = float64(bl[0]-f.dnb05LC) / dt
 			f.dnb05RRate = float64(br[0]-f.dnb05RC) / dt
 			f.mdnRate = float64(md[0]-f.mdnC) / dt
+			// DNa02 rates (THE steering DN)
+			if f.dna02L >= 0 && len(a02l) > 0 && len(a02r) > 0 &&
+				a02l[0] >= f.dna02LC && a02r[0] >= f.dna02RC {
+				f.dna02LRate = float64(a02l[0]-f.dna02LC) / dt
+				f.dna02RRate = float64(a02r[0]-f.dna02RC) / dt
+				f.dna02LC, f.dna02RC = a02l[0], a02r[0]
+			}
 			// DNpe046 rates (genuine olfactory steering)
 			if f.pe046L >= 0 && len(pe046l) > 0 && len(pe046r) > 0 &&
 				pe046l[0] >= f.pe046LC && pe046r[0] >= f.pe046RC {
@@ -773,6 +795,9 @@ func (w *World) advance(f *Fly) error {
 		}
 	}
 	f.p9LC, f.p9RC, f.dnb05LC, f.dnb05RC, f.mdnC = cl[0], cr[0], bl[0], br[0], md[0]
+	if f.dna02L >= 0 && len(a02l) > 0 && len(a02r) > 0 {
+		f.dna02LC, f.dna02RC = a02l[0], a02r[0]
+	}
 	copy(f.pnLC, pnCL)
 	copy(f.pnRC, pnCR)
 	f.p9Ms = simMs
@@ -823,15 +848,15 @@ func (w *World) advance(f *Fly) error {
 	// Scale: full L/R difference (one side silent) = 1.5 rad/s turn.
 	visTurn *= 1.5
 
-	// Genuine olfactory steering: DNb05 L/R difference.
-	// Yang et al. 2024 (Cell): DNb05 L/R activity difference correlates with
-	// rotational velocity, ipsiversive sign (right DNb05 active = turn right).
-	// The brain generates the rates; we decode with the published sign.
-	// (Positive turn = left, so R>L -> negative -> turn right.)
+	// Steering: DNa02 L/R difference (Maimon lab, Nature 2024).
+	// dθ/dt ∝ (DNa02R - DNa02L), positive = rightward.
+	// DNa02 receives direct PFL3 (central complex) input.
+	// Our coords: positive turn = left, so turn = (L - R)/sum.
+	// The brain generates the rates via PFL3->DNa02; we decode with published sign.
 	olfTurn := 0.0
-	b05sum := f.dnb05LRate + f.dnb05RRate
-	if b05sum > 10.0 {
-		olfTurn = (f.dnb05LRate - f.dnb05RRate) / b05sum
+	a02sum := f.dna02LRate + f.dna02RRate
+	if a02sum > 10.0 {
+		olfTurn = (f.dna02LRate - f.dna02RRate) / a02sum
 	}
 	olfTurn *= 1.5
 
@@ -904,7 +929,7 @@ func (w *World) snapshot() map[string]any {
 			"antL": f.antL, "antR": f.antR,
 			"p9L": f.p9LRate, "p9R": f.p9RRate,
 			"pe046L": f.pe046LRate, "pe046R": f.pe046RRate,
-			"dnb05": (f.dnb05LRate+f.dnb05RRate)/2, "pn": (f.pnLRate+f.pnRRate)/2, "pnL": f.pnLSm, "pnR": f.pnRSm, "mdn": f.mdnRate,
+			"dnb05": (f.dnb05LRate+f.dnb05RRate)/2, "dnb05L": f.dnb05LRate, "dnb05R": f.dnb05RRate, "dna02L": f.dna02LRate, "dna02R": f.dna02RRate, "pn": (f.pnLRate+f.pnRRate)/2, "pnL": f.pnLSm, "pnR": f.pnRSm, "mdn": f.mdnRate,
 			"brain": map[string]any{
 				"steps": f.steps, "simMs": f.simMs,
 				"spikes": f.spikes, "hz": f.instHz,
@@ -987,6 +1012,17 @@ func main() {
 		}
 		pe046R, pe046L = pe046r[0], pe046r[1]
 		fmt.Printf("DNpe046: L=%d R=%d (genuine olfactory steering)\n", pe046L, pe046R)
+	}
+	// DNa02: THE steering DN (Maimon lab, Nature 2024)
+	// dθ/dt ∝ (DNa02R - DNa02L), positive = rightward
+	dna02L, dna02R := -1, -1
+	if *connectome == "banc" {
+		dna02r, err := resolveRoots(roots, []uint64{banc_DNa02_R, banc_DNa02_L})
+		if err != nil {
+			log.Fatal("DNa02: ", err)
+		}
+		dna02R, dna02L = dna02r[0], dna02r[1]
+		fmt.Printf("DNa02: L=%d R=%d (steering DN, Maimon lab)\n", dna02L, dna02R)
 	}
 	sugar, err := resolveRoots(roots, sugarRootIDs)
 	if err != nil {
@@ -1094,6 +1130,7 @@ func main() {
 			heading: 0, battery: 1,
 			p9L: p9L, p9R: p9R,
 			pe046L: pe046L, pe046R: pe046R,
+			dna02L: dna02L, dna02R: dna02R,
 			dnb05L: dnb05[0], dnb05R: dnb05[1],
 			mdnIdx: mdnIdx,
 			pnL: pnL, pnR: pnR,
