@@ -60,6 +60,56 @@ function makePlumeTexture() {
   return t;
 }
 
+// --- scenery: procedural trees + rocks (layout from /api/scene) ---
+const trunkMat = new THREE.MeshStandardMaterial({ color: 0x6b4a2f, roughness: 0.95 });
+const leafMats = [
+  new THREE.MeshStandardMaterial({ color: 0x2d6a4f, roughness: 0.9 }),
+  new THREE.MeshStandardMaterial({ color: 0x40916c, roughness: 0.9 }),
+  new THREE.MeshStandardMaterial({ color: 0x1b4332, roughness: 0.9 }),
+];
+const rockMat = new THREE.MeshStandardMaterial({ color: 0x6b7280, roughness: 1, flatShading: true });
+
+function makeTree(h) {
+  const g = new THREE.Group();
+  const trunkH = h * 0.35;
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.7, trunkH, 8), trunkMat);
+  trunk.position.y = trunkH / 2;
+  g.add(trunk);
+  // stacked foliage cones
+  let y = trunkH * 0.8, r = h * 0.32;
+  for (let i = 0; i < 3; i++) {
+    const ch = h * 0.30;
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(r, ch, 10), leafMats[i % 3]);
+    cone.position.y = y + ch / 2;
+    g.add(cone);
+    y += ch * 0.55;
+    r *= 0.72;
+  }
+  return g;
+}
+
+function makeRock(r) {
+  const m = new THREE.Mesh(new THREE.DodecahedronGeometry(r, 0), rockMat);
+  m.position.y = r * 0.45;
+  m.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
+  m.scale.y = 0.7;
+  return m;
+}
+
+function buildScenery(trees, rocks) {
+  for (const t of trees) {
+    const m = makeTree(t.h);
+    m.position.set(t.x, 0, t.z);
+    m.rotation.y = Math.random() * Math.PI * 2;
+    scene.add(m);
+  }
+  for (const rk of rocks) {
+    const m = makeRock(rk.r);
+    m.position.x = rk.x; m.position.z = rk.z;
+    scene.add(m);
+  }
+}
+
 function makeFly(color) {
   const grp = new THREE.Group();
   const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(color), roughness: 0.6 });
@@ -107,17 +157,19 @@ function init() {
   applyOrbit();
 
   scene.add(new THREE.AmbientLight(0x8899bb, 0.7));
-  const sun = new THREE.DirectionalLight(0xffffff, 0.9);
+  const hemi = new THREE.HemisphereLight(0x9db8d6, 0x2a2118, 0.35);
+  scene.add(hemi);
+  const sun = new THREE.DirectionalLight(0xfff2dd, 1.0);
   sun.position.set(60, 100, 40);
   scene.add(sun);
 
-  // floor + grid
+  // floor + grid (forest-floor tones)
   const floor = new THREE.Mesh(
     new THREE.PlaneGeometry(ARENA * 2, ARENA * 2),
-    new THREE.MeshStandardMaterial({ color: 0x11151f, roughness: 1 }));
+    new THREE.MeshStandardMaterial({ color: 0x101a13, roughness: 1 }));
   floor.rotation.x = -Math.PI / 2;
   scene.add(floor);
-  const grid = new THREE.GridHelper(ARENA * 2, 20, 0x2a3a5e, 0x1a2338);
+  const grid = new THREE.GridHelper(ARENA * 2, 20, 0x2e4a38, 0x1a2b20);
   grid.position.y = 0.02;
   scene.add(grid);
 
@@ -133,6 +185,11 @@ function init() {
 
   plumeTex = makePlumeTexture();
   raycaster = new THREE.Raycaster();
+
+  // scenery: trees + rocks from the server (deterministic layout)
+  fetch('/api/scene').then(r => r.json()).then(s => {
+    buildScenery(s.trees || [], s.rocks || []);
+  }).catch(() => {});
 
   canvas.addEventListener('click', e => {
     if (!addFoodMode) return;

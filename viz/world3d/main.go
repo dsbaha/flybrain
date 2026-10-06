@@ -27,6 +27,7 @@ import (
 	"io/fs"
 	"log"
 	"math"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -374,11 +375,97 @@ type Food struct {
 	x, z float64
 }
 
+// Scenery: trees (trunks block movement) and rocks (obstacles).
+type Tree struct {
+	X, Z, H float64 // H = foliage height; trunk collision radius treeTrunkR
+}
+type Rock struct {
+	X, Z, R float64 // collision radius R
+}
+
+const treeTrunkR = 1.6
+
+var spawnPts = [][2]float64{{-30, -20}, {-30, 20}, {-30, 0}, {0, -30}}
+
+// genScenery places trees and rocks deterministically from seed,
+// keeping clear of fly spawns and the initial food.
+func genScenery(seed int64) ([]Tree, []Rock) {
+	rng := rand.New(rand.NewSource(seed))
+	var trees []Tree
+	var rocks []Rock
+	clearOf := func(x, z float64) bool {
+		if math.Abs(x) > arenaHalf-6 || math.Abs(z) > arenaHalf-6 {
+			return false
+		}
+		for _, s := range spawnPts {
+			if math.Hypot(x-s[0], z-s[1]) < 12 {
+				return false
+			}
+		}
+		if math.Hypot(x-30, z) < 14 { // initial food
+			return false
+		}
+		for _, t := range trees {
+			if math.Hypot(x-t.X, z-t.Z) < 11 {
+				return false
+			}
+		}
+		for _, r := range rocks {
+			if math.Hypot(x-r.X, z-r.Z) < r.R+9 {
+				return false
+			}
+		}
+		return true
+	}
+	for tries := 0; tries < 200 && len(trees) < 14; tries++ {
+		x := (rng.Float64()*2 - 1) * (arenaHalf - 6)
+		z := (rng.Float64()*2 - 1) * (arenaHalf - 6)
+		if clearOf(x, z) {
+			trees = append(trees, Tree{X: x, Z: z, H: 8 + rng.Float64()*7})
+		}
+	}
+	for tries := 0; tries < 200 && len(rocks) < 9; tries++ {
+		x := (rng.Float64()*2 - 1) * (arenaHalf - 6)
+		z := (rng.Float64()*2 - 1) * (arenaHalf - 6)
+		if clearOf(x, z) {
+			rocks = append(rocks, Rock{X: x, Z: z, R: 2 + rng.Float64()*2.5})
+		}
+	}
+	return trees, rocks
+}
+
+// collide pushes (nx,nz) out of tree trunks and rocks; reports a hit.
+func (w *World) collide(nx, nz float64) (float64, float64, bool) {
+	hit := false
+	push := func(cx, cz, r float64) {
+		dx, dz := nx-cx, nz-cz
+		d := math.Hypot(dx, dz)
+		min := r + 1.2 // + fly body radius
+		if d < min {
+			hit = true
+			if d < 1e-6 {
+				dx, dz, d = 1, 0, 1
+			}
+			nx = cx + dx/d*min
+			nz = cz + dz/d*min
+		}
+	}
+	for _, t := range w.trees {
+		push(t.X, t.Z, treeTrunkR)
+	}
+	for _, r := range w.rocks {
+		push(r.X, r.Z, r.R)
+	}
+	return nx, nz, hit
+}
+
 type World struct {
 	mu     sync.Mutex
 	paused bool
 	flies  []*Fly
 	foods  []Food
+	trees  []Tree
+	rocks  []Rock
 	phase  float64
 	tick   uint64
 
@@ -497,6 +584,12 @@ func (w *World) advance(f *Fly) error {
 		} else {
 			f.z = nz
 		}
+		// Trunks and rocks: slide around, nudge heading so the fly
+		// doesn't grind against the obstacle.
+		if nx2, nz2, hit := w.collide(f.x, f.z); hit {
+			f.x, f.z = nx2, nz2
+			f.heading += 0.35
+		}
 		f.speed = speed
 	} else {
 		f.speed = 0
@@ -577,6 +670,7 @@ func main() {
 	tickMs := flag.Int("tick-ms", 120, "world tick period in ms (wall clock, per fly)")
 	pauseHz := flag.Float64("pause-hz", 6.0, "mean P9 rate (Hz) below which the fly sits still")
 	maxSpeed := flag.Float64("max-speed", 14.0, "fly speed at full P9 drive (units/s)")
+	seed := flag.Int64("seed", 7, "RNG seed for tree/rock scenery layout")
 	flag.Parse()
 
 	addrs := strings.Split(*brainsFlag, ",")
@@ -615,6 +709,8 @@ func main() {
 		pauseHz:   *pauseHz,
 		maxSpeed:  *maxSpeed,
 	}
+	w.trees, w.rocks = genScenery(*seed)
+	fmt.Printf("scenery: %d trees, %d rocks (seed %d)\n", len(w.trees), len(w.rocks), *seed)
 	starts := [][2]float64{{-30, -20}, {-30, 20}, {-30, 0}, {0, -30}}
 	for i, addr := range addrs {
 		addr = strings.TrimSpace(addr)
@@ -726,6 +822,21 @@ func main() {
 		w.foods = nil
 		w.mu.Unlock()
 		fmt.Fprint(rw, `{"ok":true}`)
+	})
+	mux.HandleFunc("/api/scene", func(rw http.ResponseWriter, r *http.Request) {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		trees := make([]map[string]any, 0, len(w.trees))
+		for _, t := range w.trees {
+			trees = append(trees, map[string]any{"x": t.X, "z": t.Z, "h": t.H})
+		}
+		rocks := make([]map[string]any, 0, len(w.rocks))
+		for _, rk := range w.rocks {
+			rocks = append(rocks, map[string]any{"x": rk.X, "z": rk.Z, "r": rk.R})
+		}
+		js, _ := json.Marshal(map[string]any{"trees": trees, "rocks": rocks})
+		rw.Header().Set("Content-Type", "application/json")
+		rw.Write(js)
 	})
 	fmt.Printf("flyworld: %d flies, UI on http://%s\n", len(w.flies), *listen)
 	log.Fatal(http.ListenAndServe(*listen, mux))
