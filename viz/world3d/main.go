@@ -599,13 +599,16 @@ func (w *World) advance(f *Fly) error {
 	visRateL := visSigL * 150.0 // left LC drive
 	visRateR := visSigR * 150.0 // right LC drive
 	f.visSig = visSigL + visSigR // total visual signal (for tumble gating)
-	// feeding: near food -> taste (sugar GRNs at 200 Hz, the reference drive)
+	// feeding: near food AND hungry -> taste (sugar GRNs at 200 Hz).
+	// (Flies don't eat when full; a satiated fly at food will wander off.)
 	feeding := false
-	for _, fd := range w.foods {
-		dx, dz := f.x-fd.x, f.z-fd.z
-		if dx*dx+dz*dz < 81 { // within 9 units: eating
-			feeding = true
-			break
+	if f.battery < 0.95 {
+		for _, fd := range w.foods {
+			dx, dz := f.x-fd.x, f.z-fd.z
+			if dx*dx+dz*dz < 81 { // within 9 units: eating
+				feeding = true
+				break
+			}
 		}
 	}
 	vals := make([]float32, len(w.sensIdx))
@@ -769,6 +772,12 @@ func (w *World) advance(f *Fly) error {
 		// (Baseline ~6 Hz mean; suppressed to ~0 at food.)
 		speed *= 0.25 + 0.75*math.Min(1, dnb05mean/6.0)
 		walking = true
+	}
+	// Feeding: when tasting sugar (at food), stop walking completely.
+	// (The DNb05 scaling above only reduces to 25%; feeding is a hard stop.)
+	if feeding {
+		speed = 0
+		walking = false
 	}
 	// Neural reverse: if MDN (moonwalker) is firing, walk backward.
 	// (Bidaye et al.: MDN sufficient for backward walking.)
