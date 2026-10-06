@@ -796,7 +796,9 @@ func (w *World) advance(f *Fly) error {
 
 	// Neural reverse: if MDN (moonwalker) is firing, walk backward.
 	// (Bidaye et al.: MDN sufficient for backward walking.)
-	if f.mdnRate > 20.0 {
+	// DISABLED: MDN fires spontaneously at 250Hz in the connectome,
+	// causing permanent reverse. Only reverse on actual collision (physical event).
+	if false && f.mdnRate > 20.0 {
 		speed = -0.35 * w.maxSpeed
 		walking = true
 	} else if f.reverseT > 0 {
@@ -821,12 +823,15 @@ func (w *World) advance(f *Fly) error {
 	// Scale: full L/R difference (one side silent) = 1.5 rad/s turn.
 	visTurn *= 1.5
 
-	// Genuine olfactory steering: DNpe046 L/R difference.
-	// (DM2_lPN -> DNpe046 direct, 1 hop. The brain computes the turn.)
+	// Genuine olfactory steering: DNb05 L/R difference.
+	// Yang et al. 2024 (Cell): DNb05 L/R activity difference correlates with
+	// rotational velocity, ipsiversive sign (right DNb05 active = turn right).
+	// The brain generates the rates; we decode with the published sign.
+	// (Positive turn = left, so R>L -> negative -> turn right.)
 	olfTurn := 0.0
-	c01sum := f.pe046LRate + f.pe046RRate
-	if c01sum > 10.0 {
-		olfTurn = (f.pe046LRate - f.pe046RRate) / c01sum
+	b05sum := f.dnb05LRate + f.dnb05RRate
+	if b05sum > 10.0 {
+		olfTurn = (f.dnb05LRate - f.dnb05RRate) / b05sum
 	}
 	olfTurn *= 1.5
 
