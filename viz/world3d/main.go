@@ -848,9 +848,9 @@ func (w *World) advance(f *Fly) error {
 		f.battery = math.Max(0, f.battery-0.0006)
 	}
 	if f.battery <= 0 {
-		f.x, f.z, f.heading = -30, 0, 0
-		f.battery = 1
-		f.trail = f.trail[:0]
+		// The fly starves. No teleport, no reset — death is permanent.
+		// (If the neural circuit can't keep it alive, it dies.)
+		f.battery = 0
 	}
 	f.trail = append(f.trail, [2]float64{f.x, f.z})
 	if len(f.trail) > 200 {
