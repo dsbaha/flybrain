@@ -719,12 +719,17 @@ func (w *World) advance(f *Fly) error {
 		speed = -0.35 * w.maxSpeed
 		walking = true
 	}
-	// Tumble: random turn direction. Otherwise hold course.
+	// Tumble: turn direction biased toward the stronger antenna
+	// (the bilateral odor gradient, as encoded by the ORNs).
+	// 75% toward the stronger side, 25% random (stochastic like real tumbles).
 	turn := 0.0
 	if tumble {
 		dir := 1.0
-		if rand.Float64() < 0.5 {
+		if al < ar {
 			dir = -1.0
+		}
+		if rand.Float64() < 0.25 {
+			dir = -dir // occasional random reversal
 		}
 		turn = dir * 2.5 * turnGain
 	}
