@@ -359,8 +359,8 @@ const (
 	arenaHalf = 50.0 // arena is 100x100 units
 	plumeSig  = 22.0 // odor plume sigma (cross-wind)
 	plumeLen  = 60.0 // odor plume length (downwind)
-	windX     = 0.7  // wind vector (normalized)
-	windZ     = 0.7
+	windX     = -1.0 // wind vector: blows from food (30,0) toward flies (-30,±20)
+	windZ     = 0.0
 )
 
 var flyColors = []string{"#ff5252", "#448aff", "#69f0ae", "#ffea00"}
