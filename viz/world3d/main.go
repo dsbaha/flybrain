@@ -518,6 +518,8 @@ type World struct {
 	cenL0, cenL1 int // central inputs (driven by arousal)
 	cenR0, cenR1 int
 	mdn0, mdn1   int // MDN drive inputs (neural reverse)
+	pfl3L0, pfl3L1 int // PFL3 left (central complex goal navigation)
+	pfl3R0, pfl3R1 int
 	taste0        int // offset where sugar-GRN indices start
 	sensHzMax float64 // Poisson Hz at odor concentration 1.0
 	arousalHz float64 // Poisson Hz on DNp09's true inputs (central walk intent)
@@ -661,8 +663,41 @@ func (w *World) advance(f *Fly) error {
 	if feeding {
 		taste = 200
 	}
-	for i := w.taste0; i < len(w.sensIdx); i++ {
+	// Sugar only (taste0 to pfl3L0), not PFL3
+	for i := w.taste0; i < w.pfl3L0; i++ {
 		vals[i] = taste
+	}
+	// PFL3 goal navigation: compute food bearing, stimulate PFL3
+	// This is the SENSOR stand-in (for hexapod: odor/wind sensors).
+	// The brain does PFL3->DNa02->steering via real wiring.
+	if len(w.foods) > 0 {
+		fx, fz := w.foods[0].x, w.foods[0].z
+		// Bearing to food (goal direction)
+		goalAngle := math.Atan2(fz-f.z, fx-f.x)
+		// Heading error (normalize to [-pi, pi])
+		err := goalAngle - f.heading
+		for err > math.Pi { err -= 2*math.Pi }
+		for err < -math.Pi { err += 2*math.Pi }
+		// Stimulate PFL3: left for leftward error, right for rightward
+		// (Positive error = goal left of heading = turn left)
+		pfl3Hz := 0.0
+		if math.Abs(err) > 0.1 { // 0.1 rad deadband
+			pfl3Hz = 150.0 // Goal signal strength
+		}
+		for i := w.pfl3L0; i < w.pfl3L1; i++ {
+			if err > 0 {
+				vals[i] = float32(pfl3Hz)
+			} else {
+				vals[i] = 0
+			}
+		}
+		for i := w.pfl3R0; i < w.pfl3R1; i++ {
+			if err < 0 {
+				vals[i] = float32(pfl3Hz)
+			} else {
+				vals[i] = 0
+			}
+		}
 	}
 	// NOTE: f.feeding state label REMOVED. The GRN drive above is sensory
 	// transduction (food contact -> taste). No behavioral state is set by Go.
@@ -1024,6 +1059,21 @@ func main() {
 		dna02R, dna02L = dna02r[0], dna02r[1]
 		fmt.Printf("DNa02: L=%d R=%d (steering DN, Maimon lab)\n", dna02L, dna02R)
 	}
+	// PFL3: central complex output to DNa02 (goal navigation)
+	pfl3L, pfl3R := []int{}, []int{}
+	if *connectome == "banc" {
+		pfl3lr, err := resolveRoots(roots, banc_PFL3_L)
+		if err != nil {
+			log.Fatal("PFL3_L: ", err)
+		}
+		pfl3L = pfl3lr
+		pfl3rr, err := resolveRoots(roots, banc_PFL3_R)
+		if err != nil {
+			log.Fatal("PFL3_R: ", err)
+		}
+		pfl3R = pfl3rr
+		fmt.Printf("PFL3: L=%d R=%d neurons\n", len(pfl3L), len(pfl3R))
+	}
 	sugar, err := resolveRoots(roots, sugarRootIDs)
 	if err != nil {
 		log.Fatal("sugar GRNs: ", err)
@@ -1079,6 +1129,9 @@ func main() {
 	// sensIdx: ORN-L ++ ORN-R ++ vis-L ++ vis-R ++ cen-L ++ cen-R ++ mdnDrive ++ sugar
 	sensIdx := append(append(append(append(append(append(append([]int{}, ornL...), ornR...), visLi...), visRi...), cenLi...), cenRi...), mdnDi...)
 	sensIdx = append(sensIdx, sugar...)
+	// PFL3 for central complex goal navigation (appended at end)
+	sensIdx = append(sensIdx, pfl3L...)
+	sensIdx = append(sensIdx, pfl3R...)
 	fmt.Printf("DNp09: L=%d R=%d | DNb05: L=%d R=%d | ORNs: L=%d R=%d | PNs: L=%d R=%d | vis: L=%d R=%d | cen: L=%d R=%d | mdnDrive: %d | sugar: %d\n",
 		p9L, p9R, dnb05[0], dnb05[1], len(ornL), len(ornR), len(pnL), len(pnR), len(visLi), len(visRi), len(cenLi), len(cenRi), len(mdnDi), len(sugar))
 
@@ -1093,6 +1146,10 @@ func main() {
 	c2 := c1 + len(cenRi)
 	m0 := c2
 	m1 := m0 + len(mdnDi)
+	// PFL3 offsets (after sugar)
+	p0 := m1 + len(sugar)
+	p1 := p0 + len(pfl3L)
+	p2 := p1 + len(pfl3R)
 	w := &World{
 		foods:   []Food{{x: 30, z: 0}},
 		sensIdx: sensIdx,
@@ -1103,6 +1160,8 @@ func main() {
 		cenL0:   c0, cenL1: c1,
 		cenR0:   c1, cenR1: c2,
 		mdn0:    m0, mdn1: m1,
+		pfl3L0:  p0, pfl3L1: p1,
+		pfl3R0:  p1, pfl3R1: p2,
 		taste0:  m1,
 		sensHzMax: *sensHzMax,
 		arousalHz: *arousalHz,
