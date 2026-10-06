@@ -378,9 +378,9 @@ type Fly struct {
 	p9L, p9R       int // anatomically left/right DNp09 (indices)
 	p9LRate, p9RRate float64 // Hz, from cumulative spike counts
 	p9LC, p9RC     uint64   // previous cumulative counts
-	c01L, c01R     int     // DNc01 L/R (genuine olfactory steering DNs)
-	c01LRate, c01RRate float64
-	c01LC, c01RC   uint64
+	pe046L, pe046R     int     // DNpe046 L/R (genuine olfactory steering DNs)
+	pe046LRate, pe046RRate float64
+	pe046LC, pe046RC   uint64
 	p9Ms           float64  // sim ms at previous read
 	dnb05L, dnb05R int     // olfactory DNs (stop-at-food signal)
 	dnb05LRate, dnb05RRate float64
@@ -699,14 +699,14 @@ func (w *World) advance(f *Fly) error {
 	if err != nil {
 		return err
 	}
-	// DNc01: genuine olfactory steering DNs (BANC only)
-	var c01l, c01r []uint64
-	if f.c01L >= 0 {
-		c01l, err = f.b.Spkc(f.c01L, 1)
+	// DNpe046: genuine olfactory steering DNs (BANC only)
+	var pe046l, pe046r []uint64
+	if f.pe046L >= 0 {
+		pe046l, err = f.b.Spkc(f.pe046L, 1)
 		if err != nil {
 			return err
 		}
-		c01r, err = f.b.Spkc(f.c01R, 1)
+		pe046r, err = f.b.Spkc(f.pe046R, 1)
 		if err != nil {
 			return err
 		}
@@ -736,12 +736,12 @@ func (w *World) advance(f *Fly) error {
 			f.dnb05LRate = float64(bl[0]-f.dnb05LC) / dt
 			f.dnb05RRate = float64(br[0]-f.dnb05RC) / dt
 			f.mdnRate = float64(md[0]-f.mdnC) / dt
-			// DNc01 rates (genuine olfactory steering)
-			if f.c01L >= 0 && len(c01l) > 0 && len(c01r) > 0 &&
-				c01l[0] >= f.c01LC && c01r[0] >= f.c01RC {
-				f.c01LRate = float64(c01l[0]-f.c01LC) / dt
-				f.c01RRate = float64(c01r[0]-f.c01RC) / dt
-				f.c01LC, f.c01RC = c01l[0], c01r[0]
+			// DNpe046 rates (genuine olfactory steering)
+			if f.pe046L >= 0 && len(pe046l) > 0 && len(pe046r) > 0 &&
+				pe046l[0] >= f.pe046LC && pe046r[0] >= f.pe046RC {
+				f.pe046LRate = float64(pe046l[0]-f.pe046LC) / dt
+				f.pe046RRate = float64(pe046r[0]-f.pe046RC) / dt
+				f.pe046LC, f.pe046RC = pe046l[0], pe046r[0]
 			}
 			// PN rates: compute left and right SEPARATELY for neural steering.
 			// (Previously aggregated into a single mean, losing the bilateral signal.)
@@ -821,12 +821,12 @@ func (w *World) advance(f *Fly) error {
 	// Scale: full L/R difference (one side silent) = 1.5 rad/s turn.
 	visTurn *= 1.5
 
-	// Genuine olfactory steering: DNc01 L/R difference.
-	// (DM2_lPN -> DNc01 direct, 1 hop. The brain computes the turn.)
+	// Genuine olfactory steering: DNpe046 L/R difference.
+	// (DM2_lPN -> DNpe046 direct, 1 hop. The brain computes the turn.)
 	olfTurn := 0.0
-	c01sum := f.c01LRate + f.c01RRate
+	c01sum := f.pe046LRate + f.pe046RRate
 	if c01sum > 10.0 {
-		olfTurn = (f.c01LRate - f.c01RRate) / c01sum
+		olfTurn = (f.pe046LRate - f.pe046RRate) / c01sum
 	}
 	olfTurn *= 1.5
 
@@ -898,6 +898,7 @@ func (w *World) snapshot() map[string]any {
 			"state": state, "speed": f.speed,
 			"antL": f.antL, "antR": f.antR,
 			"p9L": f.p9LRate, "p9R": f.p9RRate,
+			"pe046L": f.pe046LRate, "pe046R": f.pe046RRate,
 			"dnb05": (f.dnb05LRate+f.dnb05RRate)/2, "pn": (f.pnLRate+f.pnRRate)/2, "pnL": f.pnLSm, "pnR": f.pnRSm, "mdn": f.mdnRate,
 			"brain": map[string]any{
 				"steps": f.steps, "simMs": f.simMs,
@@ -973,14 +974,14 @@ func main() {
 	}
 	p9R, p9L := p9r[0], p9r[1]
 	// Genuine chemotaxis DNs (BANC only for now)
-	c01L, c01R := -1, -1
+	pe046L, pe046R := -1, -1
 	if *connectome == "banc" {
-		c01r, err := resolveRoots(roots, []uint64{banc_DNc01_R, banc_DNc01_L})
+		pe046r, err := resolveRoots(roots, []uint64{banc_DNpe046_R, banc_DNpe046_L})
 		if err != nil {
-			log.Fatal("DNc01: ", err)
+			log.Fatal("DNpe046: ", err)
 		}
-		c01R, c01L = c01r[0], c01r[1]
-		fmt.Printf("DNc01: L=%d R=%d (genuine olfactory steering)\n", c01L, c01R)
+		pe046R, pe046L = pe046r[0], pe046r[1]
+		fmt.Printf("DNpe046: L=%d R=%d (genuine olfactory steering)\n", pe046L, pe046R)
 	}
 	sugar, err := resolveRoots(roots, sugarRootIDs)
 	if err != nil {
@@ -1087,7 +1088,7 @@ func main() {
 			x: starts[i][0], z: starts[i][1],
 			heading: 0, battery: 1,
 			p9L: p9L, p9R: p9R,
-			c01L: c01L, c01R: c01R,
+			pe046L: pe046L, pe046R: pe046R,
 			dnb05L: dnb05[0], dnb05R: dnb05[1],
 			mdnIdx: mdnIdx,
 			pnL: pnL, pnR: pnR,
