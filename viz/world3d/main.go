@@ -702,23 +702,27 @@ func (w *World) advance(f *Fly) error {
 			f.dnb05LRate = float64(bl[0]-f.dnb05LC) / dt
 			f.dnb05RRate = float64(br[0]-f.dnb05RC) / dt
 			f.mdnRate = float64(md[0]-f.mdnC) / dt
-			pnSum := 0.0
-			n := 0
+			// PN rates: compute left and right SEPARATELY for neural steering.
+			// (Previously aggregated into a single mean, losing the bilateral signal.)
+			pnSumL, nL := 0.0, 0
 			for i := range f.pnL {
 				if pnCL[i] >= f.pnLC[i] {
-					pnSum += float64(pnCL[i] - f.pnLC[i]) / dt
-					n++
+					pnSumL += float64(pnCL[i] - f.pnLC[i]) / dt
+					nL++
 				}
 			}
+			pnSumR, nR := 0.0, 0
 			for i := range f.pnR {
 				if pnCR[i] >= f.pnRC[i] {
-					pnSum += float64(pnCR[i] - f.pnRC[i]) / dt
-					n++
+					pnSumR += float64(pnCR[i] - f.pnRC[i]) / dt
+					nR++
 				}
 			}
-			if n > 0 {
-				f.pnLRate = pnSum / float64(n)
-				f.pnRRate = f.pnLRate
+			if nL > 0 {
+				f.pnLRate = pnSumL / float64(nL)
+			}
+			if nR > 0 {
+				f.pnRRate = pnSumR / float64(nR)
 			}
 		}
 	}
@@ -767,13 +771,14 @@ func (w *World) advance(f *Fly) error {
 		speed = -0.35 * w.maxSpeed
 		walking = true
 	}
-	// Tumble: turn direction biased toward the stronger antenna
-	// (the bilateral odor gradient, as encoded by the ORNs).
+	// Tumble: turn direction biased toward the stronger PN side
+	// (the bilateral odor gradient, as encoded by the real antennal lobe).
+	// Uses the NEURAL PN left/right difference, not raw world concentrations.
 	// 75% toward the stronger side, 25% random (stochastic like real tumbles).
 	turn := 0.0
 	if tumble {
 		dir := 1.0
-		if al < ar {
+		if f.pnLRate < f.pnRRate {
 			dir = -1.0
 		}
 		if rand.Float64() < 0.25 {
