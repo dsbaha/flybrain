@@ -379,6 +379,9 @@ type Fly struct {
 	dnb05L, dnb05R int     // olfactory DNs (stop-at-food signal)
 	dnb05LRate, dnb05RRate float64
 	dnb05LC, dnb05RC uint64
+	mdnIdx  []int   // moonwalker DN indices
+	mdnRate float64 // moonwalker DN mean rate (neural reverse)
+	mdnC    uint64
 	pnL, pnR       []int   // food-glomerulus PNs (the real odor signal)
 	pnLRate, pnRRate float64
 	pnLC, pnRC     []uint64
@@ -503,6 +506,7 @@ type World struct {
 	visR0, visR1 int
 	cenL0, cenL1 int // central inputs (driven by arousal)
 	cenR0, cenR1 int
+	mdn0, mdn1   int // MDN drive inputs (neural reverse)
 	taste0        int // offset where sugar-GRN indices start
 	sensHzMax float64 // Poisson Hz at odor concentration 1.0
 	arousalHz float64 // Poisson Hz on DNp09's true inputs (central walk intent)
@@ -596,6 +600,15 @@ func (w *World) advance(f *Fly) error {
 	for i := w.cenR0; i < w.cenR1; i++ {
 		vals[i] = float32(arousal)
 	}
+	// Neural reverse: drive MDN's excitatory inputs when backing up.
+	// (Bidaye et al. 2014: MDN required for backward walking at obstacles.)
+	mdnDriveHz := 0.0
+	if f.reverseT > 0 {
+		mdnDriveHz = 200.0
+	}
+	for i := w.mdn0; i < w.mdn1; i++ {
+		vals[i] = float32(mdnDriveHz)
+	}
 	taste := float32(0)
 	if feeding {
 		taste = 200
@@ -635,6 +648,11 @@ func (w *World) advance(f *Fly) error {
 	if err != nil {
 		return err
 	}
+	// MDN: read moonwalker neurons
+	md, err := f.b.Spkc(f.mdnIdx[0], 1)
+	if err != nil {
+		return err
+	}
 	pnCL := make([]uint64, len(f.pnL))
 	for i, pix := range f.pnL {
 		c, err := f.b.Spkc(pix, 1)
@@ -654,11 +672,12 @@ func (w *World) advance(f *Fly) error {
 	if simMs > f.p9Ms {
 		dt := (simMs - f.p9Ms) / 1000.0
 		if dt > 0 && cl[0] >= f.p9LC && cr[0] >= f.p9RC &&
-			bl[0] >= f.dnb05LC && br[0] >= f.dnb05RC {
+			bl[0] >= f.dnb05LC && br[0] >= f.dnb05RC && md[0] >= f.mdnC {
 			f.p9LRate = float64(cl[0]-f.p9LC) / dt
 			f.p9RRate = float64(cr[0]-f.p9RC) / dt
 			f.dnb05LRate = float64(bl[0]-f.dnb05LC) / dt
 			f.dnb05RRate = float64(br[0]-f.dnb05RC) / dt
+			f.mdnRate = float64(md[0]-f.mdnC) / dt
 			pnSum := 0.0
 			n := 0
 			for i := range f.pnL {
@@ -679,7 +698,7 @@ func (w *World) advance(f *Fly) error {
 			}
 		}
 	}
-	f.p9LC, f.p9RC, f.dnb05LC, f.dnb05RC = cl[0], cr[0], bl[0], br[0]
+	f.p9LC, f.p9RC, f.dnb05LC, f.dnb05RC, f.mdnC = cl[0], cr[0], bl[0], br[0], md[0]
 	copy(f.pnLC, pnCL)
 	copy(f.pnRC, pnCR)
 	f.p9Ms = simMs
@@ -715,7 +734,12 @@ func (w *World) advance(f *Fly) error {
 		speed *= 0.25 + 0.75*math.Min(1, dnb05mean/6.0)
 		walking = true
 	}
-	if f.reverseT > 0 {
+	// Neural reverse: if MDN (moonwalker) is firing, walk backward.
+	// (Bidaye et al.: MDN sufficient for backward walking.)
+	if f.mdnRate > 20.0 {
+		speed = -0.35 * w.maxSpeed
+		walking = true
+	} else if f.reverseT > 0 {
 		speed = -0.35 * w.maxSpeed
 		walking = true
 	}
@@ -813,7 +837,7 @@ func (w *World) snapshot() map[string]any {
 			"state": state, "speed": f.speed,
 			"antL": f.antL, "antR": f.antR,
 			"p9L": f.p9LRate, "p9R": f.p9RRate,
-			"dnb05": (f.dnb05LRate+f.dnb05RRate)/2, "pn": (f.pnLRate+f.pnRRate)/2,
+			"dnb05": (f.dnb05LRate+f.dnb05RRate)/2, "pn": (f.pnLRate+f.pnRRate)/2, "mdn": f.mdnRate,
 			"brain": map[string]any{
 				"steps": f.steps, "simMs": f.simMs,
 				"spikes": f.spikes, "hz": f.instHz,
@@ -889,6 +913,10 @@ func main() {
 	if err != nil {
 		log.Fatal("DNb05: ", err)
 	}
+	mdnIdx, err := resolveRoots(roots, []uint64{720575940640331472, 720575940610236514, 720575940631082808, 720575940616026939})
+	if err != nil {
+		log.Fatal("MDN: ", err)
+	}
 	visLi, err := resolveRoots(roots, visL)
 	if err != nil {
 		log.Fatal("vis-L: ", err)
@@ -905,11 +933,15 @@ func main() {
 	if err != nil {
 		log.Fatal("cen-R: ", err)
 	}
-	// sensIdx: ORN-L ++ ORN-R ++ vis-L ++ vis-R ++ cen-L ++ cen-R ++ sugar
-	sensIdx := append(append(append(append(append(append([]int{}, ornL...), ornR...), visLi...), visRi...), cenLi...), cenRi...)
+	mdnDi, err := resolveRoots(roots, mdnDrive)
+	if err != nil {
+		log.Fatal("mdnDrive: ", err)
+	}
+	// sensIdx: ORN-L ++ ORN-R ++ vis-L ++ vis-R ++ cen-L ++ cen-R ++ mdnDrive ++ sugar
+	sensIdx := append(append(append(append(append(append(append([]int{}, ornL...), ornR...), visLi...), visRi...), cenLi...), cenRi...), mdnDi...)
 	sensIdx = append(sensIdx, sugar...)
-	fmt.Printf("DNp09: L=%d R=%d | DNb05: L=%d R=%d | ORNs: L=%d R=%d | PNs: L=%d R=%d | vis: L=%d R=%d | cen: L=%d R=%d | sugar: %d\n",
-		p9L, p9R, dnb05[0], dnb05[1], len(ornL), len(ornR), len(pnL), len(pnR), len(visLi), len(visRi), len(cenLi), len(cenRi), len(sugar))
+	fmt.Printf("DNp09: L=%d R=%d | DNb05: L=%d R=%d | ORNs: L=%d R=%d | PNs: L=%d R=%d | vis: L=%d R=%d | cen: L=%d R=%d | mdnDrive: %d | sugar: %d\n",
+		p9L, p9R, dnb05[0], dnb05[1], len(ornL), len(ornR), len(pnL), len(pnR), len(visLi), len(visRi), len(cenLi), len(cenRi), len(mdnDi), len(sugar))
 
 	o0 := 0
 	o1 := o0 + len(ornL)
@@ -920,6 +952,8 @@ func main() {
 	c0 := v2
 	c1 := c0 + len(cenLi)
 	c2 := c1 + len(cenRi)
+	m0 := c2
+	m1 := m0 + len(mdnDi)
 	w := &World{
 		foods:   []Food{{x: 30, z: 0}},
 		sensIdx: sensIdx,
@@ -929,7 +963,8 @@ func main() {
 		visR0:   v1, visR1: v2,
 		cenL0:   c0, cenL1: c1,
 		cenR0:   c1, cenR1: c2,
-		taste0:  c2,
+		mdn0:    m0, mdn1: m1,
+		taste0:  m1,
 		sensHzMax: *sensHzMax,
 		arousalHz: *arousalHz,
 		exploreHz: *exploreHz,
@@ -956,6 +991,7 @@ func main() {
 			heading: 0, battery: 1,
 			p9L: p9L, p9R: p9R,
 			dnb05L: dnb05[0], dnb05R: dnb05[1],
+			mdnIdx: mdnIdx,
 			pnL: pnL, pnR: pnR,
 			pnLC: make([]uint64, len(pnL)), pnRC: make([]uint64, len(pnR)),
 		})
