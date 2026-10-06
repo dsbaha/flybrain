@@ -385,6 +385,7 @@ type Fly struct {
 	pnL, pnR       []int   // food-glomerulus PNs (the real odor signal)
 	pnLRate, pnRRate float64
 	pnLSm, pnRSm float64 // smoothed (EMA) for steering — raw 50ms rates are noisy
+	visSig float64 // total visual signal (gates olfactory tumble)
 	pnLC, pnRC     []uint64
 	antL, antR    float64    // odor 0..1 at antennae
 	speed         float64
@@ -597,6 +598,7 @@ func (w *World) advance(f *Fly) error {
 	}
 	visRateL := visSigL * 150.0 // left LC drive
 	visRateR := visSigR * 150.0 // right LC drive
+	f.visSig = visSigL + visSigR // total visual signal (for tumble gating)
 	// feeding: near food -> taste (sugar GRNs at 200 Hz, the reference drive)
 	feeding := false
 	for _, fd := range w.foods {
@@ -780,9 +782,12 @@ func (w *World) advance(f *Fly) error {
 	// Tumble: turn direction biased toward the stronger PN side
 	// (the bilateral odor gradient, as encoded by the real antennal lobe).
 	// Uses the NEURAL PN left/right difference, not raw world concentrations.
+	// GATED BY VISION: only when food not seen (visSig low). When vision is
+	// available, the retinotopic LC->DNp09 steering handles it. This avoids
+	// the olfactory tumble fighting the visual steering in closed loop.
 	// 75% toward the stronger side, 25% random (stochastic like real tumbles).
 	turn := 0.0
-	if tumble {
+	if tumble && f.visSig < 0.1 {
 		dir := 1.0
 		if f.pnLSm < f.pnRSm {
 			dir = -1.0
