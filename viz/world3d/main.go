@@ -397,6 +397,8 @@ type Fly struct {
 	visSig float64 // total visual signal (gates olfactory tumble)
 	pnLC, pnRC     []uint64
 	antL, antR    float64    // odor 0..1 at antennae
+	inPlume     bool        // in odor plume (for chemotaxis state)
+	castDir     int         // crosswind cast direction (+1/-1)
 	speed         float64
 	walking       bool
 	feeding       bool
@@ -667,37 +669,50 @@ func (w *World) advance(f *Fly) error {
 	for i := w.taste0; i < w.pfl3L0; i++ {
 		vals[i] = taste
 	}
-	// PFL3 goal navigation: compute food bearing, stimulate PFL3
-	// This is the SENSOR stand-in (for hexapod: odor/wind sensors).
+	// PFL3 goal navigation: GENUINE PLUME CHEMOTAXIS.
+	// The fly senses odor via ORNs (al, ar already computed from plume).
+	// Strategy (real insect behavior):
+	//   - Odor detected: surge UPWIND (toward source)
+	//   - Odor lost: cast CROSSWIND (search for plume)
 	// The brain does PFL3->DNa02->steering via real wiring.
-	if len(w.foods) > 0 {
-		fx, fz := w.foods[0].x, w.foods[0].z
-		// Bearing to food (goal direction)
-		goalAngle := math.Atan2(fz-f.z, fx-f.x)
-		// Heading error (normalize to [-pi, pi])
-		err := goalAngle - f.heading
-		for err > math.Pi { err -= 2*math.Pi }
-		for err < -math.Pi { err += 2*math.Pi }
-		// Stimulate PFL3: left for leftward error, right for rightward
-		// (Positive error = goal left of heading = turn left)
-		pfl3Hz := 0.0
-		if math.Abs(err) > 0.1 { // 0.1 rad deadband
-			pfl3Hz = 150.0 // Goal signal strength
+	// For hexapod: replace al/ar with real odor sensors, windX/Z with anemometer.
+	odorLevel := al + ar // total odor at antennae
+	var goalAngle float64
+	if odorLevel > 0.05 {
+		// In plume: go upwind (wind blows (-1,0), so upwind is (+1,0) = angle 0)
+		goalAngle = math.Atan2(-windZ, -windX) // upwind direction
+		f.inPlume = true
+	} else {
+		// Lost plume: cast crosswind (perpendicular to wind)
+		// Alternate left/right based on time for zigzag search
+		if f.inPlume {
+			// Just lost it: start casting
+			f.castDir = 1
+			f.inPlume = false
 		}
-		for i := w.pfl3L0; i < w.pfl3L1; i++ {
-			if err > 0 {
-				vals[i] = float32(pfl3Hz)
-			} else {
-				vals[i] = 0
-			}
+		// Crosswind: 90 degrees to wind. Alternate direction periodically.
+		windAngle := math.Atan2(windZ, windX)
+		castAngle := windAngle + math.Pi/2 * float64(f.castDir)
+		// Switch cast direction every ~3 seconds (60 ticks at 20Hz)
+		if w.tick % 60 == 0 {
+			f.castDir = -f.castDir
 		}
-		for i := w.pfl3R0; i < w.pfl3R1; i++ {
-			if err < 0 {
-				vals[i] = float32(pfl3Hz)
-			} else {
-				vals[i] = 0
-			}
-		}
+		goalAngle = castAngle
+	}
+	// Heading error (normalize to [-pi, pi])
+	headErr := goalAngle - f.heading
+	for headErr > math.Pi { headErr -= 2*math.Pi }
+	for headErr < -math.Pi { headErr += 2*math.Pi }
+	// Stimulate PFL3: left for leftward error, right for rightward
+	pfl3Hz := 0.0
+	if math.Abs(headErr) > 0.1 {
+		pfl3Hz = 150.0
+	}
+	for i := w.pfl3L0; i < w.pfl3L1; i++ {
+		if headErr > 0 { vals[i] = float32(pfl3Hz) } else { vals[i] = 0 }
+	}
+	for i := w.pfl3R0; i < w.pfl3R1; i++ {
+		if headErr < 0 { vals[i] = float32(pfl3Hz) } else { vals[i] = 0 }
 	}
 	// NOTE: f.feeding state label REMOVED. The GRN drive above is sensory
 	// transduction (food contact -> taste). No behavioral state is set by Go.
