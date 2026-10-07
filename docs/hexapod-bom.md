@@ -1,14 +1,53 @@
 # Hexapod BOM — Fly-Brain Robot
 
-Four (or two) brain-driven hexapod robots. 3D printed SIXpack chassis,
-ESP32 VNC controller, BANC brain on BC-250.
+Four autonomous brain-driven hexapod robots with social interaction.
+3D printed SIXpack chassis, ESP32 VNC controller, BANC brain on BC-250.
 
 **3D model:** [SIXpack Robot by delta3Robotics](https://makerworld.com/en/models/1822096-sixpack-robot-sixlegged-fpv-walking-marvel)
 **Filament:** PETG, ~229g per bot (fits Bambu A1 mini bed)
 
 ---
 
-## Electronics — Per Bot
+## Design Tiers
+
+| Tier | Per bot | 4 bots | What's included |
+|---|---|---|---|
+| **Classroom** | ~$44 | ~$176 | Brain→legs walking demo, USB powered |
+| **Autonomous + Social** | ~$100 | ~$440 | Full build: battery, vision, IR social, touch sensing |
+
+This BOM covers the **Autonomous + Social** tier (the complete design).
+Classroom tier details at the bottom.
+
+---
+
+## Social Experiment Design
+
+Each bot has a unique IR ID. They detect, identify, and interact.
+
+### Individual Identity
+| Bot | IR ID | Behavior bias |
+|---|---|---|
+| Bot 1 | 0x01 | Explorer (seeks novelty) |
+| Bot 2 | 0x02 | Follower (attracted to others) |
+| Bot 3 | 0x03 | Avoider (maintains distance) |
+| Bot 4 | 0x04 | Forager (seeks charger) |
+| Charger | 0x00 | "Food" — all bots home when hungry |
+
+### Social Behaviors (brain-driven)
+1. **Detection:** IR receivers pick up another bot's ID + bearing (L/R)
+2. **Vision:** Camera sees other bots as moving objects → optic lobe
+3. **Decision:** Brain weighs social signals vs. hunger vs. curiosity
+4. **Action:** Approach, follow, avoid, or ignore — via DNp09/DNa02
+
+### Experiments to Run
+- **Aggregation:** Do bots cluster? (fly social behavior)
+- **Charger competition:** 4 bots, 1 charger — who gets there first?
+- **Leader/follower:** Does Bot 2 actually follow Bot 1?
+- **Avoidance:** Does Bot 3 maintain personal space?
+
+---
+
+## Electronics — Per Bot (Autonomous + Social)
 
 | # | Part | Qty | Unit $ | Source | Notes |
 |---|---|---|---|---|---|
@@ -136,3 +175,27 @@ ESP32 VNC controller, BANC brain on BC-250.
 9. Walk test → tune gait → connect to brain
 
 Firmware: `firmware/esp32-vnc/esp32-vnc.ino` in this repo.
+
+---
+
+## Classroom Tier (Budget)
+
+Stripped to the core "fly brain controls robot legs" demo. USB powered,
+brain on laptop, no autonomy.
+
+| Part | Qty | $ | Source |
+|---|---|---|---|
+| ESP32 DEVKIT V1 | 1 | $5 | AliExpress |
+| PCA9685 PWM driver | 1 | $3 | AliExpress |
+| SG90 servos (12-pack) | 12 | $25 | Amazon |
+| Micro USB cable | 1 | $2 | — |
+| Jumper wires | 1 pack | $3 | Shared |
+| 3D printed parts | 1 set | $6 | PETG |
+
+**Per bot: ~$44 | 2 bots: ~$88 | 4 bots: ~$176**
+
+**Upgrade path** (each is a separate lesson):
+1. Add camera → visual navigation
+2. Add INA219 → obstacle detection (campaniform sensilla!)
+3. Add IR → robot-to-robot communication
+4. Add battery → untethered autonomy
