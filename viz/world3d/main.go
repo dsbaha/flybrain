@@ -619,6 +619,30 @@ func (w *World) advance(f *Fly) error {
 			}
 		}
 	}
+	// Other flies as visual targets (courtship tracking via LC9/LC10).
+	// Real flies see each other; males visually track females.
+	for _, other := range w.flies {
+		if other == f {
+			continue
+		}
+		dx, dz := other.x-f.x, other.z-f.z
+		dist := math.Hypot(dx, dz)
+		if dist > 30 || dist < 2 {
+			continue
+		}
+		ang := math.Atan2(dz, dx) - f.heading
+		for ang > math.Pi { ang -= 2*math.Pi }
+		for ang < -math.Pi { ang += 2*math.Pi }
+		if math.Abs(ang) > math.Pi/3 {
+			continue
+		}
+		sig := math.Exp(-math.Pow(dist-15, 2)/(2*100)) * (1-math.Abs(ang)/(math.Pi/3))
+		if ang >= 0 {
+			visSigL += sig * 0.5
+		} else {
+			visSigR += sig * 0.5
+		}
+	}
 	visRateL := visSigL * 150.0 // left LC drive
 	visRateR := visSigR * 150.0 // right LC drive
 	f.visSig = visSigL + visSigR // total visual signal (for tumble gating)
